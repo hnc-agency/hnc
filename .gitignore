@@ -1,0 +1,12 @@
+.erlang.mk
+.hnc.plt
+*.d
+deps
+doc/guide.pdf
+doc/html
+doc/man3
+doc/man7
+ebin/test
+ebin/*.beam
+logs
+test/*.beam
