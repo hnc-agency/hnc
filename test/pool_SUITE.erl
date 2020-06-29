@@ -18,14 +18,14 @@ all() ->
 
 checkout_checkin(_) ->
 	{ok, _}=hnc:start_pool(test, #{size=>{3, 5}}, hnc_test_worker, undefined),
-	{3, 0, 0, 0}=hnc:pool_status(test),
+	#{idle:=3, out:=0, starting:=0, returning:=0}=hnc:pool_status(test),
 	W=hnc:checkout(test),
 	true=is_pid(W),
 	true=erlang:is_process_alive(W),
-	{2, 1, 0, 0}=hnc:pool_status(test),
+	#{idle:=2, out:=1, starting:=0, returning:=0}=hnc:pool_status(test),
 	"TEST"=hnc_test_worker:echo(W, "TEST"),
 	ok=hnc:checkin(test, W),
-	{Idle, 0, 0, Returning}=hnc:pool_status(test),
+	#{idle:=Idle, out:=0, starting:=0, returning:=Returning}=hnc:pool_status(test),
 	3=Idle+Returning,
 	ok=hnc:stop_pool(test),
 	ok.
@@ -75,9 +75,9 @@ strategy_lifo(_) ->
 
 blocking(_) ->
 	{ok, _}=hnc:start_pool(test, #{size=>{0, 1}}, hnc_test_worker, undefined),
-	{0, 0, 0, 0}=hnc:pool_status(test),
+	#{idle:=0, out:=0, starting:=0, returning:=0}=hnc:pool_status(test),
 	_=hnc:checkout(test),
-	{0, 1, 0, 0}=hnc:pool_status(test),
+	#{idle:=0, out:=1, starting:=0, returning:=0}=hnc:pool_status(test),
 	ok=try
 		hnc:checkout(test, 100)
 	of
@@ -90,7 +90,7 @@ blocking(_) ->
 
 blocking_userdeath(_) ->
 	{ok, _}=hnc:start_pool(test, #{size=>{0, 1}}, hnc_test_worker, undefined),
-	{0, 0, 0, 0}=hnc:pool_status(test),
+	#{idle:=0, out:=0, starting:=0, returning:=0}=hnc:pool_status(test),
 	Self=self(),
 	Pid=spawn_link(
 		fun () ->
@@ -101,17 +101,17 @@ blocking_userdeath(_) ->
 	),
 	Ref=monitor(process, Pid),
 	ok=receive {Pid, ok} -> ok after 1000 -> exit(timeout) end,
-	{0, 1, 0, 0}=hnc:pool_status(test),
+	#{idle:=0, out:=1, starting:=0, returning:=0}=hnc:pool_status(test),
 	Pid ! {self(), ok},
 	ok=receive {'DOWN', Ref, process, Pid, normal} -> ok after 1000 -> exit(timeout) end,
 	_=hnc:checkout(test),
-	{0, 1, 0, 0}=hnc:pool_status(test),
+	#{idle:=0, out:=1, starting:=0, returning:=0}=hnc:pool_status(test),
 	ok=hnc:stop_pool(test),
 	ok.
 
 blocking_workerdeath(_) ->
 	{ok, _}=hnc:start_pool(test, #{size=>{0, 1}}, hnc_test_worker, undefined),
-	{0, 0, 0, 0}=hnc:pool_status(test),
+	#{idle:=0, out:=0, starting:=0, returning:=0}=hnc:pool_status(test),
 	Self=self(),
 	Pid=spawn_link(
 		fun () ->
@@ -124,12 +124,12 @@ blocking_workerdeath(_) ->
 	),
 	W=receive {Pid, ok, W1} -> W1 after 1000 -> exit(timeout) end,
 	Ref=monitor(process, W),
-	{0, 1, 0, 0}=hnc:pool_status(test),
+	#{idle:=0, out:=1, starting:=0, returning:=0}=hnc:pool_status(test),
 	Pid ! {self(), ok},
 	ok=receive {'DOWN', Ref, process, W, killed} -> ok after 1000 -> exit(timeout) end,
 	Pid ! {self(), ok},
 	_=hnc:checkout(test),
-	{0, 1, 0, 0}=hnc:pool_status(test),
+	#{idle:=0, out:=1, starting:=0, returning:=0}=hnc:pool_status(test),
 	ok=hnc:stop_pool(test),
 	ok.
 
@@ -137,12 +137,12 @@ linger(_) ->
 	{ok, _}=hnc:start_pool(test, #{size=>{1, 2}, linger=>{10, 100}}, hnc_test_worker, undefined),
 	W1=hnc:checkout(test),
 	W2=hnc:checkout(test),
-	{0, 2, 0, 0}=hnc:pool_status(test),
+	#{idle:=0, out:=2, starting:=0, returning:=0}=hnc:pool_status(test),
 	ok=hnc:checkin(test, W1),
 	ok=hnc:checkin(test, W2),
-	{_, 0, 0, _}=hnc:pool_status(test),
+	#{out:=0, starting:=0}=hnc:pool_status(test),
 	timer:sleep(200),
-	{1, 0, 0, 0}=hnc:pool_status(test),
+	#{idle:=1, out:=0, starting:=0, returning:=0}=hnc:pool_status(test),
 	ok=hnc:stop_pool(test),
 	ok.
 

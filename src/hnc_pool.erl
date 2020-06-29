@@ -126,18 +126,18 @@ handle_event({call, From}, pool_status, running, #state{rooster=Rooster}) ->
 		fun () ->
 			Result=maps:fold(
 				fun
-					(_, idle, Acc={N, _, _, _}) ->
-						setelement(1, Acc, N+1);
-					(_, {out, _}, Acc={_, N, _, _}) ->
-						setelement(2, Acc, N+1);
-					(_, starting, Acc={_, _, N, _}) ->
-						setelement(3, Acc, N+1);
-					(_, returning, Acc={_, _, _, N}) ->
-						setelement(4, Acc, N+1);
+					(_, idle, Acc=#{idle:=N}) ->
+						Acc#{idle => N+1};
+					(_, {out, _}, Acc=#{out:=N}) ->
+						Acc#{out => N+1};
+					(_, starting, Acc=#{starting := N}) ->
+						Acc#{starting => N+1};
+					(_, returning, Acc=#{returning:=N}) ->
+						Acc#{returning => N+1};
 					(_, _, Acc) ->
 						Acc
 				end,
-				{0, 0, 0, 0},
+				#{idle => 0, out => 0, starting => 0, returning => 0},
 				Rooster
 			),
 			gen_statem:reply(From, Result)
