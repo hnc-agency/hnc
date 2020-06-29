@@ -2,6 +2,7 @@
 
 -export([start_pool/4]).
 -export([stop_pool/1]).
+-export([child_spec/4]).
 -export([checkout/1, checkout/2]).
 -export([checkin/2]).
 -export([transaction/2, transaction/3]).
@@ -14,23 +15,30 @@
 
 -type pool() :: atom().
 -type worker() :: pid().
+-type transaction_fun(Result) :: fun((worker()) -> Result).
 -type size() :: {non_neg_integer(), pos_integer() | infinity}.
 -type strategy() :: fifo | lifo.
 -type linger() :: infinity | {non_neg_integer(), non_neg_integer()}.
 -type on_return() :: undefined | {fun((worker()) -> any()), timeout()}.
 -type shutdown() :: timeout() | brutal_kill.
 -type worker_status() :: idle | out | returning.
--type pool_status() :: {non_neg_integer(), non_neg_integer(), non_neg_integer(), non_neg_integer()}.
+-type pool_status() :: #{
+	idle:=non_neg_integer(),
+	out:=non_neg_integer(),
+	starting:=non_neg_integer(),
+	returning:=non_neg_integer()
+}.
 -type opts() :: #{
-		size => size(),
-		strategy => strategy(),
-		linger => linger(),
-		on_return => on_return(),
-		shutdown => shutdown()
-	}.
+	size => size(),
+	strategy => strategy(),
+	linger => linger(),
+	on_return => on_return(),
+	shutdown => shutdown()
+}.
 
 -export_type([pool/0]).
 -export_type([worker/0]).
+-export_type([transaction_fun/1]).
 -export_type([size/0]).
 -export_type([strategy/0]).
 -export_type([linger/0]).
@@ -51,6 +59,16 @@ start_pool(_, _, _, _) ->
 stop_pool(Pool) when is_atom(Pool) ->
 	hnc_sup:stop_pool(Pool).
 
+-spec child_spec(pool(), opts(), module(), term()) -> supervisor:child_spec().
+child_spec(Pool, PoolOpts, WorkerModule, WorkerStartArgs) when is_atom(Pool), is_atom(WorkerModule) ->
+	ok=validate_opts(PoolOpts),
+	#{
+		id => {hnc_embedded_sup, Pool},
+		start => {hnc_embedded_sup, start_link, [Pool, PoolOpts, WorkerModule, WorkerStartArgs]},
+		type => supervisor
+	}.
+
+
 -spec checkout(pool()) -> worker().
 checkout(Pool) ->
 	checkout(Pool, infinity).
@@ -63,11 +81,11 @@ checkout(Pool, Timeout) ->
 checkin(Pool, Worker) ->
 	hnc_pool:checkin(Pool, Worker).
 
--spec transaction(pool(), fun((worker()) -> Result)) -> Result when Result :: term().
+-spec transaction(pool(), transaction_fun(Result)) -> Result.
 transaction(Pool, Fun) ->
 	transaction(Pool, Fun, infinity).
 
--spec transaction(pool(), fun((worker()) -> Result), timeout()) -> Result when Result :: term().
+-spec transaction(pool(), transaction_fun(Result), timeout()) -> Result.
 transaction(Pool, Fun, Timeout) when is_function(Fun, 1) ->
 	Worker=checkout(Pool, Timeout),
 	try

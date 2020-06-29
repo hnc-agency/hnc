@@ -1,0 +1,11 @@
+= hnc(7)
+
+== Name
+
+hnc - Erlang worker pool
+
+== Description
+
+`hnc` (pronounced "Ag-En-Cy") is a robust, highly responsive, flexible and
+easy to configure and use Erlang worker pool application.
+
