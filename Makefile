@@ -1,3 +1,5 @@
+# See LICENSE for licensing information
+
 PROJECT = hnc
 PROJECT_DESCRIPTION = hnc - Erlang Worker Pool
 PROJECT_VERSION = 0.1.0
