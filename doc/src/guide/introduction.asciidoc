@@ -1,0 +1,41 @@
+== Introduction
+
+`hnc` (pronounced "ag-en-cy") is an Erlang worker pool application.
+
+`hnc` was designed to be...
+
+robust::
+
+Whatever fate befalls the workers or their users, it must not affect the pool that
+hosts them.
+
+highly responsive::
+
+The workers may take their time starting, working, cleaning themselves up,
+stopping, etc, but the pool itself should be responsive at all times.
+
+easily configurable, changeable at runtime::
+
+No fancy stuff for which there is no use case and which nobody undestands, just
+a few everyday configuration options and only a few conveniences. Those should
+cover a wide area of use cases already.
++
+Changing pool configuration should not require a pool to be restarted, as this
+would also mean that all the workers it hosts would have to go.
+
+easy to use::
+
+Again, no fancy stuff. Functions to start and stop pools, check workers out and
+back in, accompanied by a handy `transaction` function that wraps those up, some
+functions for changing configuration at runtime. What else do you need?
+
+reasonably protective::
+
+There should be some limits to enforce basic protection against overload, but no
+protection against deliberate abuse. If users _want_ to shoot themselves in the
+foot, we let them.
+
+versatile::
+
+Aside from pools being managed by the stand-alone `hnc` application, it should be
+possible to have pools as part of a user application's supervision tree.

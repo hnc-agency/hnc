@@ -1,0 +1,233 @@
+== Usage
+
+Before `hnc` can be used to create and manage pools, the `hnc`
+application must be started first.
+
+[source,erlang]
+----
+application:ensure_all_started(hnc).
+----
+
+=== Starting a pool
+
+[source,erlang]
+----
+{ok, _} = hnc:start_pool(PoolName, PoolOpts, WorkerModule, WorkerOpts).
+----
+
+`PoolName`::
+A unique identifier for the pool, by which it will be addressed.
+
+`PoolOpts`::
+Pool configuration.
+
+`WorkerModule`::
+The worker module for this pool.
+
+`WorkerOpts`::
+The argument given to the worker module's `start_link/1` function
+when a worker is started by this pool.
+
+=== Stopping a pool
+
+[source,erlang]
+----
+ok = hnc:stop_pool(PoolName).
+----
+
+`PoolName`::
+The pool identifier, as given in `start_pool/4`.
+
+=== Pool operations
+
+==== Checking out a worker
+
+[source,erlang]
+----
+Worker = hnc:checkout(PoolName, Timeout).
+----
+
+`PoolName`::
+The pool identifier, as given in `start_pool/4`.
+
+`Timeout`::
+The maximum time allowed for the checkout. This
+argument is optional and defaults to `infinity`.
+
+`Worker`::
+A worker from the pool specified by `PoolName`.
+
+==== Checking in a worker
+
+[source,erlang]
+----
+ok = hnc:checkin(PoolName, Worker).
+----
+
+`PoolName`::
+The pool identifier, as given in `start_pool/4`.
+
+`Worker`::
+The worker to be returned to the pool specified by `PoolName`.
+
+==== Transactions
+
+Transactions wrap checking out, performing some work with, and checking
+back in of workers.
+
+[source,erlang]
+----
+Result = hnc:transaction(PoolName, Fun, Timeout).
+----
+
+`PoolName`::
+The pool identifier, as given in `start_pool/4`.
+
+`Fun`::
+The transaction function, taking a worker from the pool
+as the single argument.
+
+`Timeout`::
+The maximum time allowed for the checkout (_not_ the entire
+transaction). This argument is optional and defaults to `infinity`.
+
+`Result`::
+The result of the transaction, as returned by the transaction function.
+
+=== Runtime configuration
+
+==== Getting the current strategy of a pool
+
+[source,erlang]
+----
+Strategy = hnc:get_strategy(PoolName, Timeout).
+----
+
+`PoolName`::
+The pool identifier, as given in `start_pool/4`.
+
+`Timeout`::
+The maximum time allowed to fetch the pool strategy. This
+argument is optional and defaults to `5000`.
+
+`Strategy`::
+The current pool strategy, either `fifo` or `lifo`.
+
+==== Setting a new pool strategy
+
+[source,erlang]
+----
+ok = hnc:set_strategy(PoolName, Strategy).
+----
+
+`PoolName`::
+The pool identifier, as given in `start_pool/4`.
+
+`Strategy`::
+The new pool strategy, either `fifo` or `lifo`.
+
+==== Getting the current pool size
+
+[source,erlang]
+----
+Size = hnc:get_size(PoolName, Timeout).
+----
+
+`PoolName`::
+The pool identifier, as given in `start_pool/4`.
+
+`Timeout`::
+The maximum time allowed to fetch the pool size. This
+argument is optional and defaults to `5000`.
+
+`Size`::
+The current pool size.
+
+==== Setting a new pool size
+
+[source,erlang]
+----
+ok = hnc:set_size(PoolName, Size).
+----
+
+`PoolName`::
+The pool identifier, as given in `start_pool/4`.
+
+`Strategy`::
+The new pool size.
+
+Changing the pool size has no immediate effect, ie no
+workers will be started and stopped. Instead, the number
+of hosted workers will converge on the new settings as
+pool operations happen.
+
+==== Getting the current linger
+
+[source,erlang]
+----
+Linger = hnc:get_linger(PoolName, Timeout).
+----
+
+`PoolName`::
+The pool identifier, as given in `start_pool/4`.
+
+`Timeout`::
+The maximum time allowed to fetch the pool linger. This
+argument is optional and defaults to `5000`.
+
+`Linger`::
+The current pool linger.
+
+==== Setting a new pool linger
+
+[source,erlang]
+----
+ok = hnc:set_linger(PoolName, Linger).
+----
+
+`PoolName`::
+The pool identifier, as given in `start_pool/4`.
+
+`Linger`::
+The new pool linger.
+
+=== Querying status
+
+==== Worker status
+
+[source,erlang]
+----
+WorkerStatus = hnc:worker_status(PoolName, Worker, Timeout).
+----
+
+`PoolName`::
+The pool identifier, as given in `start_pool/4`.
+
+`Worker`::
+The worker whose status to retrieve.
+
+`Timeout`::
+The maximum time allowed to fetch the status. This
+argument is optional and defaults to `5000`.
+
+`WorkerStatus`::
+The current status of the worker, either `idle`,
+`out`, or `returning`. If the given worker is not
+known to the pool, `undefined` is returned.
+
+==== Pool status
+
+[source,erlang]
+----
+PoolStatus = hnc:pool_status(PoolName, Timeout).
+----
+
+`PoolName`::
+The pool identifier, as given in `start_pool/4`.
+
+`Timeout`::
+The maximum time allowed to fetch the status. This
+argument is optional and defaults to `5000`.
+
+`PoolStatus`::
+The current status of the pool, as a map.
