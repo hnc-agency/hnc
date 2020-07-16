@@ -1,0 +1,47 @@
+== Embedded mode
+
+Normally, `hnc` will host pools under it's own supervisor,
+`hnc_sup`. If you want pools to be part of your application's
+supervision tree, ie have them started and stopped along with
+your application, you may use _embedded mode_.
+
+Note that the `hnc` application must still be started, even
+if you do not use it to host and supervise your pools.
+
+=== Example
+
+[source,erlang]
+----
+-module(my_pool_sup).
+
+-behavior(supervisor).
+
+-export([start_link/0]).
+-export([init/1]).
+
+start_link() ->
+	supervisor:start_link(?MODULE, []).
+
+init([]) ->
+	ChildSpecs = [
+		hnc:child_spec(my_pool, #{}, my_worker, []),
+		hnc:child_spec(my_other_pool, #{}, my_other_worker, [])
+	],
+	{ok, {#{}, ChildSpecs}}.
+----
+
+This supervisor will host two pools, `my_pool` and `my_other_pool`,
+which can be accessed like regular (non-embedded) pools, as described
+in the `Usage` chapter.
+
+[source,erlang]
+----
+W1 =hnc:checkout(my_pool),
+ok = hnc:checkin(my_pool, W1).
+
+Result = hnc:transaction(my_other_pool, fun do_stuff/1).
+----
+
+Other than regular pools, the pools will be started when the application
+of which it is part of is started, and likewise stopped when the
+application is stopped.
