@@ -16,3 +16,6 @@
 -module(hnc_worker).
 
 -callback start_link(term()) -> {ok, pid()}.
+-callback get_modules() -> [module()].
+
+-optional_callbacks([get_modules/0]).
