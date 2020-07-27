@@ -8,6 +8,35 @@ application must be started first.
 application:ensure_all_started(hnc).
 ----
 
+=== Worker modules
+
+Worker modules are modules implementing the `hnc_worker` behavior.
+The behavior defines two callbacks.
+
+[source,erlang]
+----
+start_link(Args) -> {ok, Worker}
+----
+
+`Args = term()`::
+Worker start arguments, as given by the fourth parameter to `hnc:start_pool/4`.
+
+`Worker = worker()`::
+The pid of a worker started by this function, which must be linked to the
+calling process.
+
+This callback is mandatory.
+
+[source,erlang]
+----
+get_modules() -> [module()]
+----
+
+This callback is optional.
+If the module serves only as a "starters" while the actual worker implementation
+resides in other modules, this function must return the modules of the "real"
+worker modules.
+
 === Starting a pool
 
 [source,erlang]

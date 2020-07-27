@@ -34,6 +34,11 @@ stop_worker(Sup, Worker) ->
 	supervisor:terminate_child(Sup, Worker).
 
 init({Mod, Args, Shutdown}) ->
+	{module, Mod}=code:ensure_loaded(Mod),
+	Modules=case erlang:function_exported(Mod, get_modules, 0) of
+		true -> Mod:get_modules();
+		false -> [Mod]
+	end,
 	{
 		ok,
 		{
@@ -45,7 +50,8 @@ init({Mod, Args, Shutdown}) ->
 					id => hnc_worker,
 					start => {Mod, start_link, [Args]},
 					restart => temporary,
-					shutdown => Shutdown
+					shutdown => Shutdown,
+					modules => Modules
 				}
 			]
 		}

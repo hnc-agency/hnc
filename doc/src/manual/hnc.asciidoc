@@ -75,6 +75,33 @@ opts() = #{
 }
 ----
 
+== Worker modules
+
+Worker modules implement the `hnc_worker` behavior, which defines
+two callbacks.
+
+[source,erlang]
+----
+start_link(Args) -> {ok, Worker}
+----
+
+Args = term():: Worker start arguments, as given as fourth parameter to `hnc:start_pool/4`.
+Worker = worker():: The pid of the started worker.
+
+This callback is mandatory.
+It is called by the pool in order to start a worker.
+
+[source,erlang]
+----
+get_modules() -> [module()]
+----
+
+This callback is optional.
+If the worker module does not implement a worker itself, but is
+a bridge module that only _starts_ a worker implemented in
+another module, this function must return the list of the "real"
+worker modules.
+
 == Configuration options
 
 size ({5, 5})::
