@@ -1,4 +1,4 @@
--module(hnc_test_bridgeworker).
+-module(hnc_test_workerproxy).
 
 -behavior(hnc_worker).
 

@@ -29,7 +29,7 @@ all() ->
 		blocking_workerdeath,
 		linger,
 		change_opts,
-		bridged
+		proxy
 	].
 
 checkout_checkin(_) ->
@@ -179,13 +179,13 @@ change_opts(_) ->
 	ok=hnc:stop_pool(test),
 	ok.
 
-bridged(_) ->
-	[hnc_test_worker]=hnc_test_bridgeworker:get_modules(),
-	{ok, PoolSup}=hnc:start_pool(test, #{}, hnc_test_bridgeworker, undefined),
+proxy(_) ->
+	[hnc_test_worker]=hnc_test_workerproxy:get_modules(),
+	{ok, PoolSup}=hnc:start_pool(test, #{}, hnc_test_workerproxy, undefined),
 	WorkerSup=hnc_pool_sup:get_worker_sup(PoolSup),
 	{ok,
 		#{
-			start:={hnc_test_bridgeworker, _, _},
+			start:={hnc_test_workerproxy, _, _},
 			modules:=[hnc_test_worker]
 		}
 	}=supervisor:get_childspec(WorkerSup, hnc_worker),

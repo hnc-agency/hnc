@@ -33,9 +33,10 @@ get_modules() -> [module()]
 ----
 
 This callback is optional.
-If the module serves only as a "starters" while the actual worker implementation
-resides in other modules, this function must return the modules of the "real"
-worker modules.
+If the module serves only as a proxy to start the "real" worker, ie the real
+worker implementation resides in another module, this function must return the
+module of the real worker modules, in a list, otherwise hot-code upgrading
+the worker module will not work.
 
 === Starting a pool
 

@@ -98,9 +98,10 @@ get_modules() -> [module()]
 
 This callback is optional.
 If the worker module does not implement a worker itself, but is
-a bridge module that only _starts_ a worker implemented in
-another module, this function must return the list of the "real"
-worker modules.
+a proxy module that only _starts_ a worker implemented in
+another module, this function must return the "real" worker module,
+in a list, otherwise hot-code upgrading the worker module will not
+work.
 
 == Configuration options
 
