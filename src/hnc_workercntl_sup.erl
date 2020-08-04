@@ -17,29 +17,29 @@
 
 -behavior(supervisor).
 
--export([start_link/0]).
+-export([start_link/2]).
 -export([start_worker/1]).
 -export([stop_worker/2]).
 -export([return_worker/3]).
 -export([init/1]).
 
--spec start_link() -> {ok, pid()}.
-start_link() ->
-	supervisor:start_link({local, ?MODULE}, ?MODULE, []).
+-spec start_link(pid(), pid()) -> {ok, pid()}.
+start_link(Pool, WorkerSup) ->
+	supervisor:start_link(?MODULE, {Pool, WorkerSup}).
 
 -spec start_worker(pid()) -> {ok, pid()}.
-start_worker(WorkerSup) ->
-	supervisor:start_child(?MODULE, [start_worker, self(), WorkerSup, undefined]).
+start_worker(Sup) ->
+	supervisor:start_child(Sup, [start_worker, undefined]).
 
 -spec stop_worker(pid(), hnc:worker()) -> {ok, pid()}.
-stop_worker(WorkerSup, Worker) ->
-	supervisor:start_child(?MODULE, [stop_worker, self(), WorkerSup, Worker]).
+stop_worker(Sup, Worker) ->
+	supervisor:start_child(Sup, [stop_worker, Worker]).
 
 -spec return_worker(pid(), hnc:worker(), hnc:on_return()) -> {ok, pid()}.
-return_worker(WorkerSup, Worker, ReturnCb) ->
-	supervisor:start_child(?MODULE, [{return_worker, ReturnCb}, self(), WorkerSup, Worker]).
+return_worker(Sup, Worker, ReturnCb) ->
+	supervisor:start_child(Sup, [{return_worker, ReturnCb}, Worker]).
 
-init([]) ->
+init({Pool, WorkerSup}) ->
 	{
 		ok,
 		{
@@ -49,7 +49,7 @@ init([]) ->
 			[
 				#{
 					id => hnc_workercntl,
-					start => {hnc_workercntl, start_link, []},
+					start => {hnc_workercntl, start_link, [Pool, WorkerSup]},
 					restart => temporary
 				}
 			]

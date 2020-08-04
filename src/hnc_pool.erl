@@ -17,7 +17,7 @@
 
 -behavior(gen_statem).
 
--export([start_link/2]).
+-export([start_link/4]).
 -export([checkout/2, checkin/2]).
 -export([prune/1]).
 -export([set_strategy/2, get_strategy/2]).
@@ -28,11 +28,11 @@
 -export([offer_worker/2]).
 -export([callback_mode/0, init/1, handle_event/4, terminate/3, code_change/4]).
 
--record(state, {strategy, size, linger, on_return, worker_sup, sweep_ref, rooster=#{}, workers=queue:new(), waiting=queue:new(), monitors=#{}}).
+-record(state, {strategy, size, linger, on_return, cntl_sup, sweep_ref, rooster=#{}, workers=queue:new(), waiting=queue:new(), monitors=#{}}).
 
--spec start_link(hnc:pool(), hnc:opts()) -> {ok, pid()}.
-start_link(Name, Opts) ->
-	gen_statem:start_link({local, Name}, ?MODULE, {self(), Opts}, []).
+-spec start_link(hnc:pool(), module(), term(), hnc:opts()) -> {ok, pid()}.
+start_link(Name, Opts, WorkerMod, WorkerArgs) ->
+	gen_statem:start_link({local, Name}, ?MODULE, {self(), Opts, WorkerMod, WorkerArgs}, []).
 
 -spec checkout(hnc:pool(), timeout()) -> hnc:worker().
 checkout(Pool, Timeout) ->
@@ -89,22 +89,24 @@ offer_worker(Pool, Worker) ->
 callback_mode() ->
 	handle_event_function.
 
-init({Parent, Opts}) ->
+init({Parent, Opts, WorkerMod, WorkerArgs}) ->
 	Size=maps:get(size, Opts, {5, 5}),
 	Strategy=maps:get(strategy, Opts, fifo),
 	Linger=maps:get(linger, Opts, infinity),
 	OnReturn=maps:get(on_return, Opts, undefined),
-	gen_statem:cast(self(), {setup, Parent}),
+	Shutdown=maps:get(shutdown, Opts, brutal_kill),
+	gen_statem:cast(self(), {setup, Parent, WorkerMod, WorkerArgs, Shutdown}),
 	{ok, setup, #state{strategy=Strategy, size=Size, linger=Linger, on_return=OnReturn}}.
 
-handle_event(cast, {setup, Parent}, setup, State) ->
-	WorkerSup=hnc_pool_sup:get_worker_sup(Parent),
+handle_event(cast, {setup, Parent, WorkerMod, WorkerArgs, Shutdown}, setup, State) ->
+	{ok, WorkerSup}=hnc_pool_sup:start_worker_sup(Parent, WorkerMod, WorkerArgs, Shutdown),
+	{ok, CntlSup}=hnc_pool_sup:start_cntl_sup(Parent, self(), WorkerSup),
 	gen_statem:cast(self(), init),
-	{keep_state, State#state{worker_sup=WorkerSup}};
-handle_event(cast, init, setup, State=#state{worker_sup=WorkerSup, size={Min, _}, monitors=Monitors0, rooster=Rooster0}) ->
+	{keep_state, State#state{cntl_sup=CntlSup}};
+handle_event(cast, init, setup, State=#state{cntl_sup=CntlSup, size={Min, _}, monitors=Monitors0, rooster=Rooster0}) ->
 	{Monitors1, Rooster1}=lists:foldl(
 		fun (_, {Monitors2, Rooster2}) ->
-			{ok, Starter}=hnc_workercntl_sup:start_worker(WorkerSup),
+			{ok, Starter}=hnc_workercntl_sup:start_worker(CntlSup),
 			StarterRef=monitor(process, Starter),
 			Monitors3=maps:put(StarterRef, {starter, Starter}, Monitors2),
 			Rooster3=maps:put(Starter, starting, Rooster2),
@@ -117,7 +119,7 @@ handle_event(cast, init, setup, State=#state{worker_sup=WorkerSup, size={Min, _}
 		0 -> running;
 		_ -> {setup_wait, Min}
 	end,
-	{next_state, NextStateName, State#state{worker_sup=WorkerSup, monitors=Monitors1, rooster=Rooster1}};
+	{next_state, NextStateName, State#state{monitors=Monitors1, rooster=Rooster1}};
 handle_event(_, _, setup, _) ->
 	{keep_state_and_data, postpone};
 handle_event(cast, {offer_worker, Cntl, Worker}, {setup_wait, _}, State) ->
@@ -327,11 +329,11 @@ process_down(worker, _, Pid, _, State=#state{rooster=Rooster0}) ->
 process_down(_, _, _, _, State) ->
 	State.
 
-process_down_worker(idle, Pid, State=#state{size={Min, _}, worker_sup=WorkerSup, monitors=Monitors0, rooster=Rooster0, workers=Workers0}) ->
+process_down_worker(idle, Pid, State=#state{size={Min, _}, cntl_sup=CntlSup, monitors=Monitors0, rooster=Rooster0, workers=Workers0}) ->
 	Workers1=queue:filter(fun ({WorkerPid, _}) -> WorkerPid=/=Pid end, Workers0),
 	{Monitors1, Rooster1}=case Min>maps:size(Rooster0) of
 		true ->
-			{ok, Starter}=hnc_workercntl_sup:start_worker(WorkerSup),
+			{ok, Starter}=hnc_workercntl_sup:start_worker(CntlSup),
 			StarterRef=monitor(process, Starter),
 			Monitors2=maps:put(StarterRef, {starter, Starter}, Monitors0),
 			Rooster2=maps:put(Starter, starting, Rooster0),
@@ -340,12 +342,12 @@ process_down_worker(idle, Pid, State=#state{size={Min, _}, worker_sup=WorkerSup,
 			{Monitors0, Rooster0}
 	end,
 	State#state{monitors=Monitors1, rooster=Rooster1, workers=Workers1};
-process_down_worker({out, UserRef}, _, State=#state{size={Min, _}, worker_sup=WorkerSup, monitors=Monitors0, rooster=Rooster0}) ->
+process_down_worker({out, UserRef}, _, State=#state{size={Min, _}, cntl_sup=CntlSup, monitors=Monitors0, rooster=Rooster0}) ->
 	demonitor(UserRef, [flush]),
 	Monitors1=maps:remove(UserRef, Monitors0),
 	{Monitors2, Rooster1}=case Min>maps:size(Rooster0) of
 		true ->
-			{ok, Starter}=hnc_workercntl_sup:start_worker(WorkerSup),
+			{ok, Starter}=hnc_workercntl_sup:start_worker(CntlSup),
 			StarterRef=monitor(process, Starter),
 			Monitors3=maps:put(StarterRef, {starter, Starter}, Monitors1),
 			Rooster2=maps:put(Starter, starting, Rooster0),
@@ -377,13 +379,13 @@ process_down_starter(starting, Reason, State=#state{monitors=Monitors0, waiting=
 process_down_starter(_, _, State) ->
 	State.
 
-process_down_returner(returning, Worker, State=#state{worker_sup=WorkerSup, monitors=Monitors0, rooster=Rooster0, waiting=Waiting0}) ->
-	_=hnc_workercntl_sup:stop_worker(WorkerSup, Worker),
+process_down_returner(returning, Worker, State=#state{cntl_sup=CntlSup, monitors=Monitors0, rooster=Rooster0, waiting=Waiting0}) ->
+	_=hnc_workercntl_sup:stop_worker(CntlSup, Worker),
 	case dequeue(Waiting0) of
 		empty ->
 			State;
 		_ ->
-			{ok, Starter}=hnc_workercntl_sup:start_worker(WorkerSup),
+			{ok, Starter}=hnc_workercntl_sup:start_worker(CntlSup),
 			StarterRef=monitor(process, Starter),
 			Monitors1=maps:put(StarterRef, {starter, Starter}, Monitors0),
 			Rooster1=maps:put(Starter, starting, Rooster0),
@@ -410,10 +412,10 @@ process_checkout_available(Worker, ReplyTo, User, State=#state{rooster=Rooster0,
 process_checkout_unavailable(ReplyTo, _, 0, State) ->
 	gen_statem:reply(ReplyTo, {error, timeout}),
 	State;
-process_checkout_unavailable(ReplyTo, User, Timeout, State=#state{worker_sup=WorkerSup, size={_, Max}, rooster=Rooster0, monitors=Monitors0, waiting=Waiting0}) when Max=:=infinity; map_size(Rooster0)<Max ->
+process_checkout_unavailable(ReplyTo, User, Timeout, State=#state{cntl_sup=CntlSup, size={_, Max}, rooster=Rooster0, monitors=Monitors0, waiting=Waiting0}) when Max=:=infinity; map_size(Rooster0)<Max ->
 	UserRef=monitor(process, User),
 	Monitors1=maps:put(UserRef, waiting, Monitors0),
-	{ok, Starter}=hnc_workercntl_sup:start_worker(WorkerSup),
+	{ok, Starter}=hnc_workercntl_sup:start_worker(CntlSup),
 	StarterRef=monitor(process, Starter),
 	Monitors2=maps:put(StarterRef, {starter, Starter}, Monitors1),
 	Rooster1=maps:put(Starter, starting, Rooster0),
@@ -431,7 +433,7 @@ process_checkout_unavailable(ReplyTo, User, Timeout, State=#state{monitors=Monit
 %% Which workers are stopped depends on strategy, ie the workers that are least likely to be checked out next:
 %%    - fifo: stops the workers that returned last
 %%    - lifo: stops the workers that returned first
-process_sweep(Treshold, State=#state{size={Min, _}, strategy=Strategy, worker_sup=WorkerSup, rooster=Rooster0, workers=Workers0}) ->
+process_sweep(Treshold, State=#state{size={Min, _}, strategy=Strategy, cntl_sup=CntlSup, rooster=Rooster0, workers=Workers0}) ->
 	N0=min(maps:size(Rooster0)-Min, queue:len(Workers0)),
 	Workers1=queue:to_list(Workers0),
 	Workers2=case Strategy of
@@ -441,7 +443,7 @@ process_sweep(Treshold, State=#state{size={Min, _}, strategy=Strategy, worker_su
 	{_, Workers3}=lists:foldl(
 		fun
 			({Worker, Since}, {N1, Acc}) when N1>0, Since<Treshold ->
-				_=hnc_workercntl_sup:stop_worker(WorkerSup, Worker),
+				_=hnc_workercntl_sup:stop_worker(CntlSup, Worker),
 				{N1-1, Acc};
 			(WorkerSince, {N1, Acc}) ->
 				{N1-1, [WorkerSince|Acc]}
@@ -480,9 +482,9 @@ process_offer_worker(Cntl, Worker, State=#state{size={_, Max}, rooster=Rooster0,
 			State
 	end.
 
-do_return_worker(Worker, State=#state{on_return=OnReturn, worker_sup=WorkerSup, rooster=Rooster0, monitors=Monitors0}) ->
+do_return_worker(Worker, State=#state{on_return=OnReturn, cntl_sup=CntlSup, rooster=Rooster0, monitors=Monitors0}) ->
 	Rooster1=maps:remove(Worker, Rooster0),
-	{ok, Returner}=hnc_workercntl_sup:return_worker(WorkerSup, Worker, OnReturn),
+	{ok, Returner}=hnc_workercntl_sup:return_worker(CntlSup, Worker, OnReturn),
 	ReturnerRef=monitor(process, Returner),
 	Monitors1=maps:put(ReturnerRef, {returner, Returner, Worker}, Monitors0),
 	Rooster2=maps:put(Returner, returning, Rooster1),

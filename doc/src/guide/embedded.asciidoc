@@ -5,9 +5,6 @@ Normally, `hnc` will host pools under it's own supervisor,
 supervision tree, ie have them started and stopped along with
 your application, you may use _embedded mode_.
 
-Note that the `hnc` application must still be started, even
-if you do not use it to host and supervise your pools.
-
 === Example
 
 [source,erlang]
@@ -36,7 +33,9 @@ in the `Usage` chapter.
 
 [source,erlang]
 ----
-W1 =hnc:checkout(my_pool),
+{ok, _} = my_pool_sup:start_link().
+
+W1 = hnc:checkout(my_pool).
 ok = hnc:checkin(my_pool, W1).
 
 Result = hnc:transaction(my_other_pool, fun do_stuff/1).

@@ -18,6 +18,8 @@
 -compile(export_all).
 -compile(nowarn_export_all).
 
+-import(ct_helper, [doc/1]).
+
 all() ->
 	[
 		checkout_checkin,
@@ -29,10 +31,12 @@ all() ->
 		blocking_workerdeath,
 		linger,
 		change_opts,
-		proxy
+		proxy,
+		embedded
 	].
 
 checkout_checkin(_) ->
+	doc("Ensure that checking workers out and back in works."),
 	{ok, _}=hnc:start_pool(test, #{size=>{3, 5}}, hnc_test_worker, undefined),
 	#{idle:=3, out:=0, starting:=0, returning:=0}=hnc:pool_status(test),
 	W=hnc:checkout(test),
@@ -47,6 +51,7 @@ checkout_checkin(_) ->
 	ok.
 
 transaction(_) ->
+	doc("Ensure that transactions work."),
 	{ok, _}=hnc:start_pool(test, #{}, hnc_test_worker, undefined),
 	"TEST"=hnc:transaction(
 		test,
@@ -60,6 +65,7 @@ transaction(_) ->
 	ok.
 
 strategy_fifo(_) ->
+	doc("Ensure that checking out with the fifo strategy works."),
 	{ok, _}=hnc:start_pool(test, #{strategy=>fifo, size=>{2, 2}}, hnc_test_worker, undefined),
 	W1=hnc:checkout(test),
 	W2=hnc:checkout(test),
@@ -75,6 +81,7 @@ strategy_fifo(_) ->
 	ok.
 
 strategy_lifo(_) ->
+	doc("Ensure that checking out with the lifo strategy works."),
 	{ok, _}=hnc:start_pool(test, #{strategy=>lifo, size=>{2, 2}}, hnc_test_worker, undefined),
 	W1=hnc:checkout(test),
 	W2=hnc:checkout(test),
@@ -90,6 +97,7 @@ strategy_lifo(_) ->
 	ok.
 
 blocking(_) ->
+	doc("Ensure that a pool blocks checkout requests when it is at max."),
 	{ok, _}=hnc:start_pool(test, #{size=>{0, 1}}, hnc_test_worker, undefined),
 	#{idle:=0, out:=0, starting:=0, returning:=0}=hnc:pool_status(test),
 	_=hnc:checkout(test),
@@ -105,6 +113,7 @@ blocking(_) ->
 	ok.
 
 blocking_userdeath(_) ->
+	doc("Ensure that a pool serves a blocked checkout request when the user that owns a checked out worker dies."),
 	{ok, _}=hnc:start_pool(test, #{size=>{0, 1}}, hnc_test_worker, undefined),
 	#{idle:=0, out:=0, starting:=0, returning:=0}=hnc:pool_status(test),
 	Self=self(),
@@ -126,6 +135,7 @@ blocking_userdeath(_) ->
 	ok.
 
 blocking_workerdeath(_) ->
+	doc("Ensure that a pool serves a blocked checkout request when the checked out worker dies."),
 	{ok, _}=hnc:start_pool(test, #{size=>{0, 1}}, hnc_test_worker, undefined),
 	#{idle:=0, out:=0, starting:=0, returning:=0}=hnc:pool_status(test),
 	Self=self(),
@@ -150,6 +160,7 @@ blocking_workerdeath(_) ->
 	ok.
 
 linger(_) ->
+	doc("Ensure that a pool is drops idle workers after the linger time has expired."),
 	{ok, _}=hnc:start_pool(test, #{size=>{1, 2}, linger=>{10, 100}}, hnc_test_worker, undefined),
 	W1=hnc:checkout(test),
 	W2=hnc:checkout(test),
@@ -163,6 +174,7 @@ linger(_) ->
 	ok.
 
 change_opts(_) ->
+	doc("Ensure that changing options at runtime works."),
 	{ok, _}=hnc:start_pool(test, #{}, hnc_test_worker, undefined),
 	ok=hnc:set_strategy(test, fifo),
 	fifo=hnc:get_strategy(test),
@@ -180,13 +192,26 @@ change_opts(_) ->
 	ok.
 
 proxy(_) ->
+	doc("Ensure that worker proxies work."),
 	[hnc_test_worker]=hnc_test_workerproxy:get_modules(),
 	{ok, PoolSup}=hnc:start_pool(test, #{}, hnc_test_workerproxy, undefined),
-	WorkerSup=hnc_pool_sup:get_worker_sup(PoolSup),
+	[WorkerSup]=[Pid || {hnc_worker_sup, Pid, supervisor, _} <- supervisor:which_children(PoolSup)],
 	{ok,
 		#{
 			start:={hnc_test_workerproxy, _, _},
 			modules:=[hnc_test_worker]
 		}
 	}=supervisor:get_childspec(WorkerSup, hnc_worker),
+	_=hnc:pool_status(test),
+	ok=hnc:stop_pool(test),
+	ok.
+
+embedded(_) ->
+	doc("Ensure that embedding pools in own supervisors works."),
+	{ok, EmbeddedSup}=embedded_sup:start_link(test, #{}, hnc_test_worker, undefined),
+	W=hnc:checkout(test),
+	#{out:=1}=hnc:pool_status(test),
+	ok=hnc:checkin(test, W),
+	#{out:=0}=hnc:pool_status(test),
+	exit(EmbeddedSup, normal),
 	ok.
