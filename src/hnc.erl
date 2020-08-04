@@ -78,8 +78,8 @@ stop_pool(Pool) when is_atom(Pool) ->
 child_spec(Pool, PoolOpts, WorkerModule, WorkerStartArgs) when is_atom(Pool), is_atom(WorkerModule) ->
 	ok=validate_opts(PoolOpts),
 	#{
-		id => {hnc_embedded_sup, Pool},
-		start => {hnc_embedded_sup, start_link, [Pool, PoolOpts, WorkerModule, WorkerStartArgs]},
+		id => {hnc_pool, Pool},
+		start => {hnc_pool_sup, start_link, [Pool, PoolOpts, WorkerModule, WorkerStartArgs]},
 		type => supervisor
 	}.
 

@@ -27,14 +27,11 @@ start_link() ->
 
 -spec start_pool(hnc:pool(), hnc:opts(), module(), term()) -> {ok, pid()}.
 start_pool(Name, Opts, Mod, Args) ->
+	ChildSpec0=hnc:child_spec(Name, Opts, Mod, Args),
+	ChildSpec1=ChildSpec0#{restart => temporary},
 	supervisor:start_child(
 		?MODULE,
-		#{
-			id => {hnc_pool, Name},
-			start => {hnc_pool_sup, start_link, [Name, Opts, Mod, Args]},
-			restart => temporary,
-			type => supervisor
-		}
+		ChildSpec1
 	).
 
 -spec stop_pool(hnc:pool()) -> ok.
@@ -48,13 +45,6 @@ init([]) ->
 			#{
 				strategy => one_for_one
 			},
-			[
-				#{
-					id => hnc_workercntl_sup,
-					start => {hnc_workercntl_sup, start_link, []},
-					restart => permanent,
-					type => supervisor
-				}
-			]
+			[]
 		}
 	}.

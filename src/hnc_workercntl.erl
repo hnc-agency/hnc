@@ -23,8 +23,8 @@
 
 -record(state, {pool, worker_sup, worker}).
 
--spec start_link(start_worker | stop_worker | return_worker, pid(), pid(), undefined | hnc:worker()) -> {ok, pid()}.
-start_link(Action, Pool, WorkerSup, Worker) ->
+-spec start_link(pid(), pid(), start_worker | stop_worker | {return_worker, hnc:on_return()}, undefined | hnc:worker()) -> {ok, pid()}.
+start_link(Pool, WorkerSup, Action, Worker) ->
 	gen_server:start_link(?MODULE, {Action, Pool, WorkerSup, Worker}, []).
 
 -spec accepted(pid(), hnc:worker()) -> ok.
@@ -55,23 +55,20 @@ handle_cast({worker_rejected, Worker}, State=#state{worker_sup=WorkerSup, worker
 handle_cast(stop_worker, State=#state{worker_sup=WorkerSup, worker=Worker}) ->
 	catch hnc_worker_sup:stop_worker(WorkerSup, Worker),
 	{stop, normal, State};
-handle_cast({return_worker, ReturnCb}, State=#state{pool=Pool, worker=Worker}) ->
-	case ReturnCb of
-		undefined ->
+handle_cast({return_worker, undefined}, State=#state{pool=Pool, worker=Worker}) ->
+	hnc_pool:offer_worker(Pool, Worker),
+	{noreply, State};
+handle_cast({return_worker, {Fun, Timeout}}, State=#state{pool=Pool, worker=Worker}) ->
+	{Pid, Ref}=spawn_monitor(fun () -> Fun(Worker) end),
+	receive
+		{'DOWN', Ref, process, Pid, normal} ->
 			hnc_pool:offer_worker(Pool, Worker),
 			{noreply, State};
-		{Fun, Timeout} ->
-			{Pid, Ref}=spawn_monitor(fun () -> Fun(Worker) end),
-			receive
-				{'DOWN', Ref, process, Pid, normal} ->
-					hnc_pool:offer_worker(Pool, Worker),
-					{noreply, State};
-				{'DOWN', Ref, process, Pid, Reason} ->
-					{stop, Reason, State}
-			after Timeout ->
-				exit(Pid, kill),
-				{stop, normal, State}
-			end
+		{'DOWN', Ref, process, Pid, Reason} ->
+			{stop, Reason, State}
+	after Timeout ->
+		exit(Pid, kill),
+		{stop, normal, State}
 	end;
 handle_cast(Msg, State) ->
 	{stop, {error, Msg}, State}.

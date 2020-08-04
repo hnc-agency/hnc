@@ -18,20 +18,39 @@
 -behavior(supervisor).
 
 -export([start_link/4]).
--export([get_worker_sup/1]).
+-export([start_worker_sup/4]).
+-export([start_cntl_sup/3]).
 -export([init/1]).
 
 -spec start_link(hnc:pool(), hnc:opts(), module(), term()) -> {ok, pid()}.
 start_link(Name, Opts, Mod, Args) ->
 	supervisor:start_link(?MODULE, {Name, Opts, Mod, Args}).
 
--spec get_worker_sup(pid()) -> pid().
-get_worker_sup(Sup) ->
-	[WorkerSup]=[Pid || {hnc_worker_sup, Pid, supervisor, _} <- supervisor:which_children(Sup)],
-	WorkerSup.
+-spec start_worker_sup(pid(), module(), term(), timeout() | brutal_kill) -> {ok, pid()}.
+start_worker_sup(Sup, Mod, Args, Shutdown) ->
+	supervisor:start_child(
+		Sup,
+		#{
+			id => hnc_worker_sup,
+			start => {hnc_worker_sup, start_link, [Mod, Args, Shutdown]},
+			restart => permanent,
+			type => supervisor
+		}
+	).
+
+-spec start_cntl_sup(pid(), pid(), pid()) -> {ok, pid()}.
+start_cntl_sup(Sup, Pool, WorkerSup) ->
+	supervisor:start_child(
+		Sup,
+		#{
+			id => hnc_workercntl_sup,
+			start => {hnc_workercntl_sup, start_link, [Pool, WorkerSup]},
+			restart => permanent,
+			type => supervisor
+		}
+	).
 
 init({Name, Opts, Mod, Args}) ->
-	Shutdown=maps:get(shutdown, Opts, brutal_kill),
 	{
 		ok,
 		{
@@ -40,14 +59,8 @@ init({Name, Opts, Mod, Args}) ->
 			},
 			[
 				#{
-					id => hnc_worker_sup,
-					start => {hnc_worker_sup, start_link, [Mod, Args, Shutdown]},
-					restart => permanent,
-					type => supervisor
-				},
-				#{
 					id => hnc_pool,
-					start => {hnc_pool, start_link, [Name, Opts]},
+					start => {hnc_pool, start_link, [Name, Opts, Mod, Args]},
 					restart => permanent
 				}
 			]
