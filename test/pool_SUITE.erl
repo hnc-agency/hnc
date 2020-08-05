@@ -29,6 +29,10 @@ all() ->
 		blocking,
 		blocking_userdeath,
 		blocking_workerdeath,
+		on_return,
+		on_return_timeout,
+		on_return_funcrash,
+		on_return_workercrash,
 		linger,
 		change_opts,
 		proxy,
@@ -156,6 +160,65 @@ blocking_workerdeath(_) ->
 	Pid ! {self(), ok},
 	_=hnc:checkout(test),
 	#{idle:=0, out:=1, starting:=0, returning:=0}=hnc:pool_status(test),
+	ok=hnc:stop_pool(test),
+	ok.
+
+on_return(_) ->
+	doc("Ensure that an on_return callback works."),
+	Self=self(),
+	Tag=make_ref(),
+	{ok, _}=hnc:start_pool(test, #{on_return => {fun (Worker) -> Self ! {Tag, Worker} end, 1000}}, hnc_test_worker, undefined),
+	W=hnc:checkout(test),
+	ok=hnc:checkin(test, W),
+	ok=receive {Tag, W} -> ok after 1000 -> exit(timeout) end,
+	ok=hnc:stop_pool(test),
+	ok.
+
+on_return_timeout(_) ->
+	doc("Ensure that when an on_return callback times out it takes down the worker."),
+	Self=self(),
+	Tag=make_ref(),
+	{ok, _}=hnc:start_pool(test, #{on_return => {fun (Worker) -> Self ! {Tag, Worker}, timer:sleep(1000) end, 100}}, hnc_test_worker, undefined),
+	W=hnc:checkout(test),
+	Ref=monitor(process, W),
+	ok=hnc:checkin(test, W),
+	ok=receive {Tag, W} -> ok after 1000 -> exit(timeout) end,
+	ok=receive {'DOWN', Ref, process, W, _} -> ok after 1000 -> exit(timeout) end,
+	ok=hnc:stop_pool(test),
+	ok.
+
+on_return_funcrash(_) ->
+	doc("Ensure that when an on_return callback crashes it takes down the worker."),
+	Self=self(),
+	Tag=make_ref(),
+	{ok, _}=hnc:start_pool(test, #{on_return => {fun (Worker) -> Self ! {Tag, Worker}, exit(crash) end, 1000}}, hnc_test_worker, undefined),
+	W=hnc:checkout(test),
+	Ref=monitor(process, W),
+	ok=hnc:checkin(test, W),
+	ok=receive {Tag, W} -> ok after 1000 -> exit(timeout) end,
+	ok=receive {'DOWN', Ref, process, W, killed} -> ok after 1000 -> exit(timeout) end,
+	ok=hnc:stop_pool(test),
+	ok.
+
+on_return_workercrash(_) ->
+	doc("Ensure that when a worker crashes in an on_return callback it takes down the returner."),
+	Self=self(),
+	Tag=make_ref(),
+	ReturnFun=fun (Worker) ->
+		Self ! {Tag, self(), Worker},
+		ok=receive {Self, ok} -> ok after 1000 -> exit(timeout) end,
+		Worker ! crash,
+		ok=receive {Self, ok} -> ok after 1000 -> exit(timeout) end
+	end,
+	{ok, _}=hnc:start_pool(test, #{on_return => {ReturnFun, 1000}}, hnc_test_worker, undefined),
+	W=hnc:checkout(test),
+	Ref=monitor(process, W),
+	ok=hnc:checkin(test, W),
+	{ok, Returner}=receive {Tag, Ret, W} -> {ok, Ret} after 1000 -> exit(timeout) end,
+	Ref2=monitor(process, Returner),
+	Returner ! {self(), ok},
+	ok=receive {'DOWN', Ref, process, W, crash} -> ok after 1000 -> exit(timeout) end,
+	ok=receive {'DOWN', Ref2, process, Returner, killed} -> ok after 1000 -> exit(timeout) end,
 	ok=hnc:stop_pool(test),
 	ok.
 
