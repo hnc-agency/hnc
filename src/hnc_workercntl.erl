@@ -15,69 +15,70 @@
 
 -module(hnc_workercntl).
 
--behavior(gen_server).
+-behavior(gen_statem).
 
--export([start_link/4]).
+-export([start_link/3]).
 -export([accepted/2, rejected/2]).
--export([init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2, code_change/3]).
+-export([callback_mode/0, init/1, command/3, accept_reject/3, terminate/3, code_change/4]).
 
 -record(state, {pool, worker_sup, worker}).
 
--spec start_link(pid(), pid(), start_worker | stop_worker | {return_worker, hnc:on_return()}, undefined | hnc:worker()) -> {ok, pid()}.
-start_link(Pool, WorkerSup, Action, Worker) ->
-	gen_server:start_link(?MODULE, {Action, Pool, WorkerSup, Worker}, []).
+-spec start_link(pid(), pid(), start_worker | {stop_worker, hnc:worker()} | {return_worker, hnc:worker(), hnc:on_return()}) -> {ok, pid()}.
+start_link(Pool, WorkerSup, Action) ->
+	{ok, Pid}=gen_statem:start_link(?MODULE, {Pool, WorkerSup}, []),
+	ok=gen_statem:cast(Pid, Action),
+	{ok, Pid}.
 
 -spec accepted(pid(), hnc:worker()) -> ok.
 accepted(Pid, Worker) ->
-	gen_server:cast(Pid, {worker_accepted, Worker}).
+	gen_statem:cast(Pid, {worker_accepted, Worker}).
 
 -spec rejected(pid(), hnc:worker()) -> ok.
 rejected(Pid, Worker) ->
-	gen_server:cast(Pid, {worker_rejected, Worker}).
+	gen_statem:cast(Pid, {worker_rejected, Worker}).
 
-init({Action, Pool, WorkerSup, Worker}) ->
-	gen_server:cast(self(), Action),
-	{ok, #state{pool=Pool, worker_sup=WorkerSup, worker=Worker}}.
+callback_mode() ->
+	state_functions.
 
-handle_call(Msg, _, State) ->
-	{stop, {error, Msg}, State}.
+init({Pool, WorkerSup}) ->
+	{ok, command, #state{pool=Pool, worker_sup=WorkerSup}}.
 
-handle_cast(start_worker, State=#state{pool=Pool, worker_sup=WorkerSup}) ->
-	{ok, Pid}=hnc_worker_sup:start_worker(WorkerSup),
-	true=is_pid(Pid),
-	hnc_pool:offer_worker(Pool, Pid),
-	{noreply, State#state{worker=Pid}};
-handle_cast({worker_accepted, Worker}, State=#state{worker=Worker}) ->
-	{stop, normal, State};
-handle_cast({worker_rejected, Worker}, State=#state{worker_sup=WorkerSup, worker=Worker}) ->
+command(cast, start_worker, State=#state{pool=Pool, worker_sup=WorkerSup}) ->
+	{ok, Worker}=hnc_worker_sup:start_worker(WorkerSup),
+	true=is_pid(Worker),
+	ok=hnc_pool:offer_worker(Pool, Worker),
+	{next_state, accept_reject, State#state{worker=Worker}};
+command(cast, {stop_worker, Worker}, #state{worker_sup=WorkerSup}) ->
 	catch hnc_worker_sup:stop_worker(WorkerSup, Worker),
-	{stop, normal, State};
-handle_cast(stop_worker, State=#state{worker_sup=WorkerSup, worker=Worker}) ->
-	catch hnc_worker_sup:stop_worker(WorkerSup, Worker),
-	{stop, normal, State};
-handle_cast({return_worker, undefined}, State=#state{pool=Pool, worker=Worker}) ->
-	hnc_pool:offer_worker(Pool, Worker),
-	{noreply, State};
-handle_cast({return_worker, {Fun, Timeout}}, State=#state{pool=Pool, worker=Worker}) ->
-	{Pid, Ref}=spawn_monitor(fun () -> Fun(Worker) end),
+	stop;
+command(cast, {return_worker, Worker, undefined}, State=#state{pool=Pool}) ->
+	ok=hnc_pool:offer_worker(Pool, Worker),
+	{next_state, accept_reject, State#state{worker=Worker}};
+command(cast, {return_worker, Worker, {Fun, Timeout}}, State=#state{pool=Pool}) ->
+	WorkerRef=monitor(process, Worker),
+	{Returner, ReturnerRef}=spawn_monitor(fun () -> Fun(Worker) end),
 	receive
-		{'DOWN', Ref, process, Pid, normal} ->
-			hnc_pool:offer_worker(Pool, Worker),
-			{noreply, State};
-		{'DOWN', Ref, process, Pid, Reason} ->
-			{stop, Reason, State}
+		{'DOWN', ReturnerRef, process, Returner, normal} ->
+			ok=hnc_pool:offer_worker(Pool, Worker),
+			{next_state, accept_reject, State#state{worker=Worker}};
+		{'DOWN', ReturnerRef, process, Returner, Reason} ->
+			{stop, Reason};
+		{'DOWN', WorkerRef, process, Worker, Reason} ->
+			exit(Returner, kill),
+			{stop, Reason}
 	after Timeout ->
-		exit(Pid, kill),
-		{stop, normal, State}
-	end;
-handle_cast(Msg, State) ->
-	{stop, {error, Msg}, State}.
+		exit(Returner, kill),
+		stop
+	end.
 
-handle_info(Msg, State) ->
-	{stop, {error, Msg}, State}.
+accept_reject(cast, {worker_accepted, Worker}, #state{worker=Worker}) ->
+	stop;
+accept_reject(cast, {worker_rejected, Worker}, #state{worker_sup=WorkerSup, worker=Worker}) ->
+	catch hnc_worker_sup:stop_worker(WorkerSup, Worker),
+	stop.
 
-terminate(_, _) ->
+terminate(_, _, _) ->
 	ok.
 
-code_change(_, State, _) ->
-	{ok, State}.
+code_change(_, StateName, State, _) ->
+	{ok, StateName, State}.

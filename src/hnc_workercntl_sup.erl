@@ -29,15 +29,15 @@ start_link(Pool, WorkerSup) ->
 
 -spec start_worker(pid()) -> {ok, pid()}.
 start_worker(Sup) ->
-	supervisor:start_child(Sup, [start_worker, undefined]).
+	supervisor:start_child(Sup, [start_worker]).
 
 -spec stop_worker(pid(), hnc:worker()) -> {ok, pid()}.
 stop_worker(Sup, Worker) ->
-	supervisor:start_child(Sup, [stop_worker, Worker]).
+	supervisor:start_child(Sup, [{stop_worker, Worker}]).
 
 -spec return_worker(pid(), hnc:worker(), hnc:on_return()) -> {ok, pid()}.
 return_worker(Sup, Worker, ReturnCb) ->
-	supervisor:start_child(Sup, [{return_worker, ReturnCb}, Worker]).
+	supervisor:start_child(Sup, [{return_worker, Worker, ReturnCb}]).
 
 init({Pool, WorkerSup}) ->
 	{

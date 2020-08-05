@@ -38,7 +38,6 @@ echo(Pid, Msg) ->
 init(crash) ->
 	exit(crash);
 init(_) ->
-	process_flag(trap_exit, true),
 	loop().
 
 loop() ->
@@ -47,11 +46,6 @@ loop() ->
 			ok;
 		crash ->
 			exit(crash);
-		{'EXIT', _, shutdown} ->
-			timer:sleep(5000),
-			ok;
-		{'EXIT', _, Reason} ->
-			exit(Reason);
 		{{To, Tag}, Msg} ->
 			To ! {Tag, Msg},
 			loop()
