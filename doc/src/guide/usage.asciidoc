@@ -124,6 +124,47 @@ transaction). This argument is optional and defaults to `infinity`.
 `Result`::
 The result of the transaction, as returned by the transaction function.
 
+==== Giving away a worker to another process
+
+Usually, the pool monitors the process that checked out a worker and automatically
+checks it back in when this process dies, making it available to be checked out by
+another process.
+
+If the worker was checked out in order to be used by another process, it should
+be given away to that other process. The pool will then monitor the other process,
+and the worker will not be checked in when the original process dies.
+
+The process calling this function must be the current owner of the worker.
+
+The process receiving the worker is sent a message `{'HNC-WORKER-TRANSFER', Worker, FromPid, GiftData}`.
+
+[source,erlang]
+----
+Result = hnc:give_away(PoolName, Worker, OtherProcess, GiftData).
+Result = hnc:give_away(PoolName, Worker, OtherProcess, GiftData, Timeout).
+----
+
+`PoolName`::
+The pool identifier, as given in `start_pool/4`.
+
+`Worker`::
+The worker to be given to `OtherProcess`.
+
+`OtherProcess`::
+The process to give the `Worker` to.
+
+`GiftData`::
+Arbitrary term to send along with the transfer message.
+
+`Timeout`::
+The maximum time allowed for the worker transfer operation.
+
+`Result`::
+The result of the operation, either `ok` on success, or an `{error, Reson`}` tuple
+with the reason being either `not_owner` if the process calling this function
+is not the current owner of the worker, or `not_found` if the worker is not
+hosted by the given pool.
+
 === Runtime configuration
 
 ==== Getting the current strategy of a pool

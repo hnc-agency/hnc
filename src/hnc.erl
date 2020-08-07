@@ -20,6 +20,7 @@
 -export([child_spec/4]).
 -export([checkout/1, checkout/2]).
 -export([checkin/2]).
+-export([give_away/4, give_away/5]).
 -export([transaction/2, transaction/3]).
 -export([set_strategy/2, get_strategy/1, get_strategy/2]).
 -export([set_size/2, get_size/1, get_size/2]).
@@ -108,6 +109,12 @@ transaction(Pool, Fun, Timeout) when is_function(Fun, 1) ->
 	after
 		checkin(Pool, Worker)
 	end.
+
+give_away(Pool, Worker, NewUser, GiftData) ->
+	give_away(Pool, Worker, NewUser, GiftData, 5000).
+
+give_away(Pool, Worker, NewUser, GiftData, Timeout) ->
+	hnc_pool:give_away(Pool, Worker, NewUser, GiftData, Timeout).
 
 -spec set_strategy(pool(), strategy()) -> ok.
 set_strategy(Pool, Strategy) ->

@@ -19,6 +19,7 @@
 
 -export([start_link/4]).
 -export([checkout/2, checkin/2]).
+-export([give_away/5]).
 -export([prune/1]).
 -export([set_strategy/2, get_strategy/2]).
 -export([set_size/2, get_size/2]).
@@ -45,6 +46,10 @@ checkout(Pool, Timeout) ->
 -spec checkin(hnc:pool(), hnc:worker()) -> ok.
 checkin(Pool, Worker) ->
 	gen_statem:cast(Pool, {checkin, Worker}).
+
+-spec give_away(hnc:pool(), hnc:worker(), pid(), term(), timeout()) -> ok | {error, term()}.
+give_away(Pool, Worker, NewUser, GiftData, Timeout) ->
+	gen_statem:call(Pool, {give_away, Worker, self(), NewUser, GiftData}, Timeout).
 
 -spec prune(hnc:pool()) -> ok.
 prune(Pool) ->
@@ -200,7 +205,7 @@ handle_event(cast, {checkout_timeout, UserRef}, running, State=#state{monitors=M
 		{waiting, Monitors1} ->
 			Waiting1=queue:filter(
 				fun
-					({Ref, ReplyTo}) when Ref=:=UserRef ->
+					({{_, Ref}, ReplyTo}) when Ref=:=UserRef ->
 						gen_statem:reply(ReplyTo, {error, timeout}),
 						false;
 					(_) ->
@@ -214,11 +219,29 @@ handle_event(cast, {checkout_timeout, UserRef}, running, State=#state{monitors=M
 	end;
 handle_event(cast, {checkin, Worker}, running, State=#state{rooster=Rooster0, monitors=Monitors0}) ->
 	case maps:take(Worker, Rooster0) of
-		{{out, UserRef}, Rooster1} ->
+		{{out, {_, UserRef}}, Rooster1} ->
 			demonitor(UserRef, [flush]),
 			Monitors1=maps:remove(UserRef, Monitors0),
 			{keep_state, do_return_worker(Worker, State#state{rooster=Rooster1, monitors=Monitors1})};
 		_ ->
+			keep_state_and_data
+	end;
+handle_event({call, From}, {give_away, Worker, OldUser, NewUser, GiftData}, running, State=#state{rooster=Rooster0, monitors=Monitors0}) ->
+	case maps:take(Worker, Rooster0) of
+		{{out, {OldUser, OldUserRef}}, Rooster1} ->
+			demonitor(OldUserRef, [flush]),
+			Monitors1=maps:remove(OldUserRef, Monitors0),
+			NewUserRef=monitor(process, NewUser),
+			Monitors2=maps:put(NewUserRef, {user, Worker}, Monitors1),
+			Rooster2=maps:put(Worker, {out, {NewUser, NewUserRef}}, Rooster1),
+			gen_statem:reply(From, ok),
+			NewUser ! {'HNC-WORKER-TRANSFER', Worker, OldUser, GiftData},
+			{keep_state, State#state{rooster=Rooster2, monitors=Monitors2}};
+		{{out, _}, _} ->
+			gen_statem:reply(From, {error, not_owner}),
+			keep_state_and_data;
+		_ ->
+			gen_statem:reply(From, {error, not_found}),
 			keep_state_and_data
 	end;
 handle_event(cast, {offer_worker, Cntl, Worker}, running, State) ->
@@ -286,17 +309,17 @@ schedule_sweep_idle({_, SweepInterval}) ->
 
 process_waiting(State=#state{strategy=Strategy, rooster=Rooster0, monitors=Monitors0, waiting=Waiting0, workers=Workers0}) ->
 	case {dequeue(Waiting0), dequeue(Workers0, Strategy)} of
-		{{{UserRef, ReplyTo}, Waiting1}, {{Worker, _}, Workers1}} ->
+		{{{{User, UserRef}, ReplyTo}, Waiting1}, {{Worker, _}, Workers1}} ->
 			gen_statem:reply(ReplyTo, {ok, Worker}),
 			Monitors1=maps:update(UserRef, {user, Worker}, Monitors0),
-			Rooster1=maps:update(Worker, {out, UserRef}, Rooster0),
+			Rooster1=maps:update(Worker, {out, {User, UserRef}}, Rooster0),
 			State#state{rooster=Rooster1, monitors=Monitors1, waiting=Waiting1, workers=Workers1};
 		_ ->
 			State
 	end.
 
 process_down(waiting, Ref, _, _, State=#state{waiting=Waiting0}) ->
-	Waiting1=queue:filter(fun ({UserRef, _}) -> UserRef=/=Ref end, Waiting0),
+	Waiting1=queue:filter(fun ({{_, UserRef}, _}) -> UserRef=/=Ref end, Waiting0),
 	State#state{waiting=Waiting1};
 process_down({starter, Pid}, _, Pid, Reason, State=#state{rooster=Rooster0}) ->
 	case maps:take(Pid, Rooster0) of
@@ -342,7 +365,7 @@ process_down_worker(idle, Pid, State=#state{size={Min, _}, cntl_sup=CntlSup, mon
 			{Monitors0, Rooster0}
 	end,
 	State#state{monitors=Monitors1, rooster=Rooster1, workers=Workers1};
-process_down_worker({out, UserRef}, _, State=#state{size={Min, _}, cntl_sup=CntlSup, monitors=Monitors0, rooster=Rooster0}) ->
+process_down_worker({out, {_, UserRef}}, _, State=#state{size={Min, _}, cntl_sup=CntlSup, monitors=Monitors0, rooster=Rooster0}) ->
 	demonitor(UserRef, [flush]),
 	Monitors1=maps:remove(UserRef, Monitors0),
 	{Monitors2, Rooster1}=case Min>maps:size(Rooster0) of
@@ -361,14 +384,14 @@ process_down_worker(stopping, _, State) ->
 process_down_worker(_, _, State) ->
 	State.
 
-process_down_user({out, Ref}, Worker, Ref, State) ->
+process_down_user({out, {_, Ref}}, Worker, Ref, State) ->
 	do_return_worker(Worker, State);
 process_down_user(_, _, _, State) ->
 	State.
 
 process_down_starter(starting, Reason, State=#state{monitors=Monitors0, waiting=Waiting0}) ->
 	case dequeue(Waiting0) of
-		{{UserRef, ReplyTo}, Waiting1} ->
+		{{{_, UserRef}, ReplyTo}, Waiting1} ->
 			gen_statem:reply(ReplyTo, {error, Reason}),
 			demonitor(UserRef, [flush]),
 			Monitors1=maps:remove(UserRef, Monitors0),
@@ -406,7 +429,7 @@ process_checkout_available(Worker, ReplyTo, User, State=#state{rooster=Rooster0,
 	gen_statem:reply(ReplyTo, {ok, Worker}),
 	UserRef=monitor(process, User),
 	Monitors1=maps:put(UserRef, {user, Worker}, Monitors0),
-	Rooster1=maps:update(Worker, {out, UserRef}, Rooster0),
+	Rooster1=maps:update(Worker, {out, {User, UserRef}}, Rooster0),
 	State#state{rooster=Rooster1, monitors=Monitors1}.
 
 process_checkout_unavailable(ReplyTo, _, 0, State) ->
@@ -419,13 +442,13 @@ process_checkout_unavailable(ReplyTo, User, Timeout, State=#state{cntl_sup=CntlS
 	StarterRef=monitor(process, Starter),
 	Monitors2=maps:put(StarterRef, {starter, Starter}, Monitors1),
 	Rooster1=maps:put(Starter, starting, Rooster0),
-	Waiting1=queue:in({UserRef, ReplyTo}, Waiting0),
+	Waiting1=queue:in({{User, UserRef}, ReplyTo}, Waiting0),
 	schedule_checkout_timeout(Timeout, UserRef),
 	State#state{monitors=Monitors2, rooster=Rooster1, waiting=Waiting1};
 process_checkout_unavailable(ReplyTo, User, Timeout, State=#state{monitors=Monitors0, waiting=Waiting0}) ->
 	UserRef=monitor(process, User),
 	Monitors1=maps:put(UserRef, waiting, Monitors0),
-	Waiting1=queue:in({UserRef, ReplyTo}, Waiting0),
+	Waiting1=queue:in({{User, UserRef}, ReplyTo}, Waiting0),
 	schedule_checkout_timeout(Timeout, UserRef),
 	State#state{monitors=Monitors1, waiting=Waiting1}.
 
