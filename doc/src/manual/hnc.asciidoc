@@ -277,6 +277,34 @@ of the `Transaction` function.
 
 The optional timeout concerns only the checkout step, not the entire transaction.
 
+=== Giving away a worker
+
+When the process that checked out a worker dies, the worker is returned to the pool and
+made available to be checked out again by another process. +
+If you want the worker to remain checked out, you may give it away to another process.
+
+[source,erlang]
+----
+Result = hnc:give_away(PoolName, Worker, NewUser, GiftData).
+Result = hnc:give_away(PoolName, Worker, NewUser, GiftData, Timeout).
+----
+
+PoolName = pool():: Pool identifier as given in `start_pool/4`.
+Worker = worker():: The worker to be transferred to `NewUser`.
+NewUser = pid():: The pid of the process to give the worker to.
+GiftData = term():: Additional data to send to the new user.
+Timeout = timeout():: Maximum time to wait before a worker becomes available.
+Result = ok | {error, Reason}:: The result of the `give_away` operation.
+Reason = not_owner | not_found:: If giving away failed, the reason for the failure.
+
+On success, `ok` is returned. Additionally, the process that is to receive the worker
+is sent a message `{'HNC-WORKER-TRANSFER', Worker, FromPid, GiftData}`.
+
+If the process calling this function is not the owner of the worker, `{error, not_owner}`
+is returned.
+
+If the worker is not hosted by this pool, `{error, not_found}` is returned.
+
 === Getting and setting the checkout strategy
 
 [source,erlang]

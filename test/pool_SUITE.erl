@@ -33,6 +33,7 @@ all() ->
 		on_return_timeout,
 		on_return_funcrash,
 		on_return_workercrash,
+		give_away,
 		linger,
 		change_opts,
 		proxy,
@@ -219,6 +220,27 @@ on_return_workercrash(_) ->
 	Returner ! {self(), ok},
 	ok=receive {'DOWN', Ref, process, W, crash} -> ok after 1000 -> exit(timeout) end,
 	ok=receive {'DOWN', Ref2, process, Returner, killed} -> ok after 1000 -> exit(timeout) end,
+	ok=hnc:stop_pool(test),
+	ok.
+
+give_away(_) ->
+	doc("Ensure that giving away a worker works."),
+	Self=self(),
+	{ok, _}=hnc:start_pool(test, #{}, hnc_test_worker, undefined),
+	Pid=spawn_link(
+		fun () ->
+			W=hnc:checkout(test),
+			Self ! {self(), ok, W},
+			ok=receive {Self, ok} ->ok after 1000 -> exit(timeout) end,
+			ok=hnc:give_away(test, W, Self, {a_gift_from, self()}),
+			Self ! {self(), ok}
+		end
+	),
+	W=receive {Pid, ok, Worker} -> Worker after 1000 -> exit(timeout) end,
+	Pid ! {Self, ok},
+	ok=receive {Pid, ok} -> ok after 1000 -> exit(timeout) end,
+	ok=receive {'HNC-WORKER-TRANSFER', W, Pid, {a_gift_from, Pid}} -> ok after 1000 -> exit(timeout) end,
+	out=hnc:worker_status(test, W),
 	ok=hnc:stop_pool(test),
 	ok.
 
