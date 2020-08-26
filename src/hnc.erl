@@ -15,20 +15,30 @@
 
 -module(hnc).
 
+-export([checkin/1, checkin/2]).
+-export([checkout/1, checkout/2]).
+-export([child_spec/4]).
+-export([get_linger/1, get_linger/2]).
+-export([get_size/1, get_size/2]).
+-export([get_strategy/1, get_strategy/2]).
+-export([get_worker/1]).
+-export([give_away/3, give_away/4]).
+-export([pool_status/1, pool_status/2]).
+-export([set_linger/2]).
+-export([set_size/2]).
+-export([set_strategy/2]).
 -export([start_pool/4]).
 -export([stop_pool/1]).
--export([child_spec/4]).
--export([checkout/1, checkout/2]).
--export([checkin/2]).
--export([give_away/4, give_away/5]).
 -export([transaction/2, transaction/3]).
--export([set_strategy/2, get_strategy/1, get_strategy/2]).
--export([set_size/2, get_size/1, get_size/2]).
--export([set_linger/2, get_linger/1, get_linger/2]).
--export([pool_status/1, pool_status/2]).
--export([worker_status/2, worker_status/3]).
 -export([validate_opts/1]).
+-export([worker_status/1, worker_status/2]).
 
+-record(worker_ref, {
+		pool :: pool(),
+		worker :: worker()
+	}).
+
+-opaque worker_ref() :: #worker_ref{}.
 -type pool() :: atom().
 -type worker() :: pid().
 -type transaction_fun(Result) :: fun((worker()) -> Result).
@@ -52,6 +62,7 @@
 	shutdown => shutdown()
 }.
 
+-export_type([worker_ref/0]).
 -export_type([pool/0]).
 -export_type([worker/0]).
 -export_type([transaction_fun/1]).
@@ -85,17 +96,21 @@ child_spec(Pool, PoolOpts, WorkerModule, WorkerStartArgs) when is_atom(Pool), is
 	}.
 
 
--spec checkout(pool()) -> worker().
+-spec checkout(pool()) -> worker_ref().
 checkout(Pool) ->
 	checkout(Pool, infinity).
 
--spec checkout(pool(), timeout()) -> worker().
+-spec checkout(pool(), timeout()) -> worker_ref().
 checkout(Pool, Timeout) ->
-	hnc_pool:checkout(Pool, Timeout).
+	#worker_ref{pool=Pool, worker=hnc_pool:checkout(Pool, Timeout)}.
 
--spec checkin(pool(), worker()) -> ok.
-checkin(Pool, Worker) ->
-	hnc_pool:checkin(Pool, Worker).
+-spec checkin(worker_ref()) -> ok | {error, term()}.
+checkin(WorkerRef) ->
+	checkin(WorkerRef, infinity).
+
+-spec checkin(worker_ref(), timeout()) -> ok | {error, term()}.
+checkin(#worker_ref{pool=Pool, worker=Worker}, Timeout) ->
+	hnc_pool:checkin(Pool, Worker, Timeout).
 
 -spec transaction(pool(), transaction_fun(Result)) -> Result.
 transaction(Pool, Fun) ->
@@ -103,18 +118,26 @@ transaction(Pool, Fun) ->
 
 -spec transaction(pool(), transaction_fun(Result), timeout()) -> Result.
 transaction(Pool, Fun, Timeout) when is_function(Fun, 1) ->
-	Worker=checkout(Pool, Timeout),
+	WorkerRef=checkout(Pool, Timeout),
 	try
-		Fun(Worker)
+		Fun(WorkerRef#worker_ref.worker)
 	after
-		checkin(Pool, Worker)
+		checkin(WorkerRef)
 	end.
 
-give_away(Pool, Worker, NewUser, GiftData) ->
-	give_away(Pool, Worker, NewUser, GiftData, 5000).
+-spec give_away(worker_ref(), pid(), term()) -> ok | {error, term()}.
+give_away(WorkerRef, NewUser, GiftData) ->
+	give_away(WorkerRef, NewUser, GiftData, 5000).
 
-give_away(Pool, Worker, NewUser, GiftData, Timeout) ->
-	hnc_pool:give_away(Pool, Worker, NewUser, GiftData, Timeout).
+-spec give_away(worker_ref(), pid(), term(), timeout()) -> ok | {error, term()}.
+give_away(WorkerRef=#worker_ref{pool=Pool, worker=Worker}, NewUser, GiftData, Timeout) ->
+	case hnc_pool:give_away(Pool, Worker, NewUser, Timeout) of
+		ok ->
+			NewUser ! {'HNC-WORKER-TRANSFER', WorkerRef, self(), GiftData},
+			ok;
+		Error ->
+			Error
+	end.
 
 -spec set_strategy(pool(), strategy()) -> ok.
 set_strategy(Pool, Strategy) ->
@@ -163,12 +186,16 @@ pool_status(Pool) ->
 pool_status(Pool, Timeout) ->
 	hnc_pool:pool_status(Pool, Timeout).
 
--spec worker_status(pool(), worker()) -> worker_status() | undefined.
-worker_status(Pool, Worker) ->
-	worker_status(Pool, Worker, 5000).
+-spec worker_status(worker_ref()) -> worker_status() | undefined.
+worker_status(WorkerRef) ->
+	worker_status(WorkerRef, 5000).
 
--spec worker_status(pool(), worker(), timeout()) -> worker_status() | undefined.
-worker_status(Pool, Worker, Timeout) ->
+-spec get_worker(worker_ref()) -> worker().
+get_worker(#worker_ref{worker=Worker}) ->
+	Worker.
+
+-spec worker_status(worker_ref(), timeout()) -> worker_status() | undefined.
+worker_status(#worker_ref{pool=Pool, worker=Worker}, Timeout) ->
 	hnc_pool:worker_status(Pool, Worker, Timeout).
 
 -spec validate_opts(opts()) -> ok.

@@ -18,8 +18,8 @@
 -behavior(gen_statem).
 
 -export([start_link/4]).
--export([checkout/2, checkin/2]).
--export([give_away/5]).
+-export([checkout/2, checkin/3]).
+-export([give_away/4]).
 -export([prune/1]).
 -export([set_strategy/2, get_strategy/2]).
 -export([set_size/2, get_size/2]).
@@ -43,13 +43,13 @@ checkout(Pool, Timeout) ->
 		Other -> exit({unexpected, Other})
 	end.
 
--spec checkin(hnc:pool(), hnc:worker()) -> ok.
-checkin(Pool, Worker) ->
-	gen_statem:cast(Pool, {checkin, Worker}).
+-spec checkin(hnc:pool(), hnc:worker(), timeout()) -> ok | {error, term()}.
+checkin(Pool, Worker, Timeout) ->
+	gen_statem:call(Pool, {checkin, Worker, self()}, Timeout).
 
--spec give_away(hnc:pool(), hnc:worker(), pid(), term(), timeout()) -> ok | {error, term()}.
-give_away(Pool, Worker, NewUser, GiftData, Timeout) ->
-	gen_statem:call(Pool, {give_away, Worker, self(), NewUser, GiftData}, Timeout).
+-spec give_away(hnc:pool(), hnc:worker(), pid(), timeout()) -> ok | {error, term()}.
+give_away(Pool, Worker, NewUser, Timeout) ->
+	gen_statem:call(Pool, {give_away, Worker, self(), NewUser}, Timeout).
 
 -spec prune(hnc:pool()) -> ok.
 prune(Pool) ->
@@ -108,36 +108,30 @@ handle_event(cast, {setup, Parent, WorkerMod, WorkerArgs, Shutdown}, setup, Stat
 	{ok, CntlSup}=hnc_pool_sup:start_cntl_sup(Parent, self(), WorkerSup),
 	gen_statem:cast(self(), init),
 	{keep_state, State#state{cntl_sup=CntlSup}};
-handle_event(cast, init, setup, State=#state{cntl_sup=CntlSup, size={Min, _}, monitors=Monitors0, rooster=Rooster0}) ->
-	{Monitors1, Rooster1}=lists:foldl(
-		fun (_, {Monitors2, Rooster2}) ->
-			{ok, Starter}=hnc_workercntl_sup:start_worker(CntlSup),
-			StarterRef=monitor(process, Starter),
-			Monitors3=maps:put(StarterRef, {starter, Starter}, Monitors2),
-			Rooster3=maps:put(Starter, starting, Rooster2),
-			{Monitors3, Rooster3}
+handle_event(cast, init, setup, State=#state{size={0, _}}) ->
+	{next_state, running, State};
+handle_event(cast, init, setup, State0=#state{size={Min, _}}) ->
+	State1=lists:foldl(
+		fun (_, AccState) ->
+			start_worker(AccState)
 		end,
-		{Monitors0, Rooster0},
+		State0,
 		lists:seq(1, Min)
 	),
-	NextStateName=case Min of
-		0 -> running;
-		_ -> {setup_wait, Min}
-	end,
-	{next_state, NextStateName, State#state{monitors=Monitors1, rooster=Rooster1}};
+	{next_state, {setup_wait, Min}, State1};
 handle_event(_, _, setup, _) ->
 	{keep_state_and_data, postpone};
 handle_event(cast, {offer_worker, Cntl, Worker}, {setup_wait, _}, State) ->
 	{keep_state, process_offer_worker(Cntl, Worker, State)};
-handle_event(info, {'DOWN', Ref, process, Pid, _}, {setup_wait, N}, State=#state{linger=Linger, rooster=Rooster0, monitors=Monitors0}) ->
-	case maps:take(Ref, Monitors0) of
-		{{starter, Pid}, Monitors1} when N=<1 ->
-			Rooster1=maps:remove(Pid, Rooster0),
+handle_event(info, {'DOWN', Ref, process, Pid, _}, {setup_wait, N}, State0=#state{linger=Linger}) ->
+	case take_monitor(Ref, State0) of
+		{{starter, Pid}, State1} when N=<1 ->
+			State2=remove_rooster(Pid, State1),
 			SweepRef=schedule_sweep_idle(Linger),
-			{next_state, running, State#state{sweep_ref=SweepRef, rooster=Rooster1, monitors=Monitors1}};
-		{{starter, Pid}, Monitors1} ->
-			Rooster1=maps:remove(Pid, Rooster0),
-			{next_state, {setup_wait, N-1}, State#state{rooster=Rooster1, monitors=Monitors1}};
+			{next_state, running, State2#state{sweep_ref=SweepRef}};
+		{{starter, Pid}, State1} ->
+			State2=remove_rooster(Pid, State1),
+			{next_state, {setup_wait, N-1}, State2};
 		_ ->
 			{keep_state_and_data, postpone}
 	end;
@@ -200,9 +194,9 @@ handle_event({call, From}, get_linger, running, #state{linger=Linger}) ->
 	keep_state_and_data;
 handle_event({call, From}, {checkout, User, Timeout}, running, State) ->
 	{keep_state, process_checkout(From, User, Timeout, State)};
-handle_event(cast, {checkout_timeout, UserRef}, running, State=#state{monitors=Monitors0, waiting=Waiting0}) ->
-	case maps:take(UserRef, Monitors0) of
-		{waiting, Monitors1} ->
+handle_event(cast, {checkout_timeout, UserRef}, running, State0=#state{waiting=Waiting0}) ->
+	case take_monitor(UserRef, State0) of
+		{waiting, State1} ->
 			Waiting1=queue:filter(
 				fun
 					({{_, Ref}, ReplyTo}) when Ref=:=UserRef ->
@@ -213,30 +207,34 @@ handle_event(cast, {checkout_timeout, UserRef}, running, State=#state{monitors=M
 				end,
 				Waiting0
 			),
-			{keep_state, State#state{monitors=Monitors1, waiting=Waiting1}};
+			{keep_state, State1#state{waiting=Waiting1}};
 		_ ->
 			keep_state_and_data
 	end;
-handle_event(cast, {checkin, Worker}, running, State=#state{rooster=Rooster0, monitors=Monitors0}) ->
-	case maps:take(Worker, Rooster0) of
-		{{out, {_, UserRef}}, Rooster1} ->
-			demonitor(UserRef, [flush]),
-			Monitors1=maps:remove(UserRef, Monitors0),
-			{keep_state, do_return_worker(Worker, State#state{rooster=Rooster1, monitors=Monitors1})};
-		_ ->
-			keep_state_and_data
-	end;
-handle_event({call, From}, {give_away, Worker, OldUser, NewUser, GiftData}, running, State=#state{rooster=Rooster0, monitors=Monitors0}) ->
-	case maps:take(Worker, Rooster0) of
-		{{out, {OldUser, OldUserRef}}, Rooster1} ->
-			demonitor(OldUserRef, [flush]),
-			Monitors1=maps:remove(OldUserRef, Monitors0),
-			NewUserRef=monitor(process, NewUser),
-			Monitors2=maps:put(NewUserRef, {user, Worker}, Monitors1),
-			Rooster2=maps:put(Worker, {out, {NewUser, NewUserRef}}, Rooster1),
+handle_event({call, From}, {checkin, Worker, User}, running, State0) ->
+	case take_rooster(Worker, State0) of
+		{{out, {User, UserRef}}, State1} ->
 			gen_statem:reply(From, ok),
-			NewUser ! {'HNC-WORKER-TRANSFER', Worker, OldUser, GiftData},
-			{keep_state, State#state{rooster=Rooster2, monitors=Monitors2}};
+			demonitor(UserRef, [flush]),
+			State2=remove_monitor(UserRef, State1),
+			{keep_state, do_return_worker(Worker, State2)};
+		{{out, _}, _} ->
+			gen_statem:reply(From, {error, not_owner}),
+			keep_state_and_data;
+		_ ->
+			gen_statem:reply(From, {error, not_found}),
+			keep_state_and_data
+	end;
+handle_event({call, From}, {give_away, Worker, OldUser, NewUser}, running, State0) ->
+	case take_rooster(Worker, State0) of
+		{{out, {OldUser, OldUserRef}}, State1} ->
+			demonitor(OldUserRef, [flush]),
+			State2=remove_monitor(OldUserRef, State1),
+			NewUserRef=monitor(process, NewUser),
+			State3=put_monitor(NewUserRef, {user, Worker}, State2),
+			State4=put_rooster(Worker, {out, {NewUser, NewUserRef}}, State3),
+			gen_statem:reply(From, ok),
+			{keep_state, State4};
 		{{out, _}, _} ->
 			gen_statem:reply(From, {error, not_owner}),
 			keep_state_and_data;
@@ -255,11 +253,11 @@ handle_event(cast, prune, running, State0) ->
 	Treshold=stamp(),
 	State1=process_sweep(Treshold, State0),
 	{keep_state, State1};
-handle_event(info, {'DOWN', Ref, process, Pid, Reason}, running, State=#state{monitors=Monitors0}) ->
-	case maps:take(Ref, Monitors0) of
-		{Value, Monitors1} ->
-			State1=process_down(Value, Ref, Pid, Reason, State#state{monitors=Monitors1}),
-			{keep_state, State1};
+handle_event(info, {'DOWN', Ref, process, Pid, Reason}, running, State0) ->
+	case take_monitor(Ref, State0) of
+		{Value, State1} ->
+			State2=process_down(Value, Ref, Pid, Reason, State1),
+			{keep_state, State2};
 		error ->
 			keep_state_and_data
 	end;
@@ -278,22 +276,6 @@ stamp() ->
 stamp(Offset) ->
 	erlang:monotonic_time(millisecond)+Offset.
 
-dequeue(Queue) ->
-	dequeue(Queue, fifo).
-
-dequeue(Queue, Strategy) ->
-	case dequeue1(Queue, Strategy) of
-		{empty, _} ->
-			empty;
-		{{value, Item}, Queue1} ->
-			{Item, Queue1}
-	end.
-
-dequeue1(Queue, fifo) ->
-	queue:out(Queue);
-dequeue1(Queue, lifo) ->
-	queue:out_r(Queue).
-
 schedule_checkout_timeout(infinity, _) ->
 	ok;
 schedule_checkout_timeout(Timeout, UserRef) ->
@@ -307,78 +289,71 @@ schedule_sweep_idle({_, SweepInterval}) ->
 	{ok, _}=timer:apply_after(SweepInterval, gen_statem, cast, [self(), {sweep_idle, Ref}]),
 	Ref.
 
-process_waiting(State=#state{strategy=Strategy, rooster=Rooster0, monitors=Monitors0, waiting=Waiting0, workers=Workers0}) ->
-	case {dequeue(Waiting0), dequeue(Workers0, Strategy)} of
-		{{{{User, UserRef}, ReplyTo}, Waiting1}, {{Worker, _}, Workers1}} ->
+process_waiting(State0) ->
+	case has_waiting(State0) andalso has_worker(State0) of
+		true ->
+			{{{User, UserRef}, ReplyTo}, State1}=dequeue_waiting(State0),
+			{{Worker, _}, State2}=dequeue_worker(State1),
 			gen_statem:reply(ReplyTo, {ok, Worker}),
-			Monitors1=maps:update(UserRef, {user, Worker}, Monitors0),
-			Rooster1=maps:update(Worker, {out, {User, UserRef}}, Rooster0),
-			State#state{rooster=Rooster1, monitors=Monitors1, waiting=Waiting1, workers=Workers1};
-		_ ->
-			State
+			State3=update_monitor(UserRef, {user, Worker}, State2),
+			update_rooster(Worker, {out, {User, UserRef}}, State3);
+		false ->
+			State0
 	end.
 
 process_down(waiting, Ref, _, _, State=#state{waiting=Waiting0}) ->
 	Waiting1=queue:filter(fun ({{_, UserRef}, _}) -> UserRef=/=Ref end, Waiting0),
 	State#state{waiting=Waiting1};
-process_down({starter, Pid}, _, Pid, Reason, State=#state{rooster=Rooster0}) ->
-	case maps:take(Pid, Rooster0) of
-		{Value, Rooster1} ->
-			process_down_starter(Value, Reason, State#state{rooster=Rooster1});
+process_down({starter, Pid}, _, Pid, Reason, State0) ->
+	case take_rooster(Pid, State0) of
+		{Value, State1} ->
+			process_down_starter(Value, Reason, State1);
 		error ->
-			State
+			State0
 	end;
-process_down({returner, Pid, Worker}, _, Pid, _, State=#state{rooster=Rooster0}) ->
-	case maps:take(Pid, Rooster0) of
-		{Value, Rooster1} ->
-			process_down_returner(Value, Worker, State#state{rooster=Rooster1});
+process_down({returner, Pid, Worker}, _, Pid, _, State0) ->
+	case take_rooster(Pid, State0) of
+		{Value, State1} ->
+			process_down_returner(Value, Worker, State1);
 		error ->
-			State
+			State0
 	end;
-process_down({user, Worker}, Ref, _, _, State=#state{rooster=Rooster0}) ->
-	case maps:take(Worker, Rooster0) of
-		{Value, Rooster1} ->
-			process_down_user(Value, Worker, Ref, State#state{rooster=Rooster1});
+process_down({user, Worker}, Ref, _, _, State0) ->
+	case take_rooster(Worker, State0) of
+		{Value, State1} ->
+			process_down_user(Value, Worker, Ref, State1);
 		error ->
-			State
+			State0
 	end;
-process_down(worker, _, Pid, _, State=#state{rooster=Rooster0}) ->
-	case maps:take(Pid, Rooster0) of
-		{Value, Rooster1} ->
-			process_down_worker(Value, Pid, State#state{rooster=Rooster1});
+process_down(worker, _, Pid, _, State0) ->
+	case take_rooster(Pid, State0) of
+		{Value, State1} ->
+			process_down_worker(Value, Pid, State1);
 		error ->
-			State
+			State0
 	end;
 process_down(_, _, _, _, State) ->
 	State.
 
-process_down_worker(idle, Pid, State=#state{size={Min, _}, cntl_sup=CntlSup, monitors=Monitors0, rooster=Rooster0, workers=Workers0}) ->
+process_down_worker(idle, Pid, State0=#state{size={Min, _}, rooster=Rooster, workers=Workers0}) ->
 	Workers1=queue:filter(fun ({WorkerPid, _}) -> WorkerPid=/=Pid end, Workers0),
-	{Monitors1, Rooster1}=case Min>maps:size(Rooster0) of
+	State1=case Min>maps:size(Rooster) of
 		true ->
-			{ok, Starter}=hnc_workercntl_sup:start_worker(CntlSup),
-			StarterRef=monitor(process, Starter),
-			Monitors2=maps:put(StarterRef, {starter, Starter}, Monitors0),
-			Rooster2=maps:put(Starter, starting, Rooster0),
-			{Monitors2, Rooster2};
+			start_worker(State0);
 		false ->
-			{Monitors0, Rooster0}
+			State0
 	end,
-	State#state{monitors=Monitors1, rooster=Rooster1, workers=Workers1};
-process_down_worker({out, {_, UserRef}}, _, State=#state{size={Min, _}, cntl_sup=CntlSup, monitors=Monitors0, rooster=Rooster0}) ->
+	State1#state{workers=Workers1};
+process_down_worker({out, {_, UserRef}}, _, State0=#state{size={Min, _}, rooster=Rooster}) ->
 	demonitor(UserRef, [flush]),
-	Monitors1=maps:remove(UserRef, Monitors0),
-	{Monitors2, Rooster1}=case Min>maps:size(Rooster0) of
+	State1=remove_monitor(UserRef, State0),
+	State2=case Min>maps:size(Rooster) of
 		true ->
-			{ok, Starter}=hnc_workercntl_sup:start_worker(CntlSup),
-			StarterRef=monitor(process, Starter),
-			Monitors3=maps:put(StarterRef, {starter, Starter}, Monitors1),
-			Rooster2=maps:put(Starter, starting, Rooster0),
-			{Monitors3, Rooster2};
+			start_worker(State1);
 		false ->
-			{Monitors1, Rooster0}
+			State1
 	end,
-	State#state{monitors=Monitors2, rooster=Rooster1};
+	State2;
 process_down_worker(stopping, _, State) ->
 	State;
 process_down_worker(_, _, State) ->
@@ -389,68 +364,56 @@ process_down_user({out, {_, Ref}}, Worker, Ref, State) ->
 process_down_user(_, _, _, State) ->
 	State.
 
-process_down_starter(starting, Reason, State=#state{monitors=Monitors0, waiting=Waiting0}) ->
-	case dequeue(Waiting0) of
-		{{{_, UserRef}, ReplyTo}, Waiting1} ->
+process_down_starter(starting, Reason, State0) ->
+	case dequeue_waiting(State0) of
+		{{{_, UserRef}, ReplyTo}, State1} ->
 			gen_statem:reply(ReplyTo, {error, Reason}),
 			demonitor(UserRef, [flush]),
-			Monitors1=maps:remove(UserRef, Monitors0),
-			State#state{monitors=Monitors1, waiting=Waiting1};
+			remove_monitor(UserRef, State1);
 		empty ->
-			State
+			State0
 	end;
 process_down_starter(_, _, State) ->
 	State.
 
-process_down_returner(returning, Worker, State=#state{cntl_sup=CntlSup, monitors=Monitors0, rooster=Rooster0, waiting=Waiting0}) ->
+process_down_returner(returning, Worker, State=#state{cntl_sup=CntlSup}) ->
 	_=hnc_workercntl_sup:stop_worker(CntlSup, Worker),
-	case dequeue(Waiting0) of
-		empty ->
+	case has_waiting(State) of
+		false ->
 			State;
-		_ ->
-			{ok, Starter}=hnc_workercntl_sup:start_worker(CntlSup),
-			StarterRef=monitor(process, Starter),
-			Monitors1=maps:put(StarterRef, {starter, Starter}, Monitors0),
-			Rooster1=maps:put(Starter, starting, Rooster0),
-			State#state{monitors=Monitors1, rooster=Rooster1}
+		true ->
+			start_worker(State)
 	end;
 process_down_returner(_, _, State) ->
 	State.
 
-process_checkout(ReplyTo, User, Timeout, State=#state{strategy=Strategy, workers=Workers0}) ->
-	case dequeue(Workers0, Strategy) of
-		{{Worker, _}, Workers1} ->
-			process_checkout_available(Worker, ReplyTo, User, State#state{workers=Workers1});
+process_checkout(ReplyTo, User, Timeout, State0) ->
+	case dequeue_worker(State0) of
+		{{Worker, _}, State1} ->
+			process_checkout_available(Worker, ReplyTo, User, State1);
 		empty ->
-			process_checkout_unavailable(ReplyTo, User, Timeout, State)
+			process_checkout_unavailable(ReplyTo, User, Timeout, State0)
 	end.
 
-process_checkout_available(Worker, ReplyTo, User, State=#state{rooster=Rooster0, monitors=Monitors0}) ->
+process_checkout_available(Worker, ReplyTo, User, State0) ->
 	gen_statem:reply(ReplyTo, {ok, Worker}),
 	UserRef=monitor(process, User),
-	Monitors1=maps:put(UserRef, {user, Worker}, Monitors0),
-	Rooster1=maps:update(Worker, {out, {User, UserRef}}, Rooster0),
-	State#state{rooster=Rooster1, monitors=Monitors1}.
+	State1=put_monitor(UserRef, {user, Worker}, State0),
+	update_rooster(Worker, {out, {User, UserRef}}, State1).
 
 process_checkout_unavailable(ReplyTo, _, 0, State) ->
 	gen_statem:reply(ReplyTo, {error, timeout}),
 	State;
-process_checkout_unavailable(ReplyTo, User, Timeout, State=#state{cntl_sup=CntlSup, size={_, Max}, rooster=Rooster0, monitors=Monitors0, waiting=Waiting0}) when Max=:=infinity; map_size(Rooster0)<Max ->
+process_checkout_unavailable(ReplyTo, User, Timeout, State0=#state{size={_, Max}, rooster=Rooster, waiting=Waiting0}) ->
+	State1=case Max=:=infinity orelse map_size(Rooster)<Max of
+		true -> start_worker(State0);
+		false -> State0
+	end,
 	UserRef=monitor(process, User),
-	Monitors1=maps:put(UserRef, waiting, Monitors0),
-	{ok, Starter}=hnc_workercntl_sup:start_worker(CntlSup),
-	StarterRef=monitor(process, Starter),
-	Monitors2=maps:put(StarterRef, {starter, Starter}, Monitors1),
-	Rooster1=maps:put(Starter, starting, Rooster0),
+	State2=put_monitor(UserRef, waiting, State1),
 	Waiting1=queue:in({{User, UserRef}, ReplyTo}, Waiting0),
 	schedule_checkout_timeout(Timeout, UserRef),
-	State#state{monitors=Monitors2, rooster=Rooster1, waiting=Waiting1};
-process_checkout_unavailable(ReplyTo, User, Timeout, State=#state{monitors=Monitors0, waiting=Waiting0}) ->
-	UserRef=monitor(process, User),
-	Monitors1=maps:put(UserRef, waiting, Monitors0),
-	Waiting1=queue:in({{User, UserRef}, ReplyTo}, Waiting0),
-	schedule_checkout_timeout(Timeout, UserRef),
-	State#state{monitors=Monitors1, waiting=Waiting1}.
+	State2#state{waiting=Waiting1}.
 
 %% Sweep workers that were returned before the given treshold time, but obey minimum pool size.
 %% Which workers are stopped depends on strategy, ie the workers that are least likely to be checked out next:
@@ -481,34 +444,102 @@ process_sweep(Treshold, State=#state{size={Min, _}, strategy=Strategy, cntl_sup=
 	Workers5=queue:from_list(Workers4),
 	State#state{workers=Workers5}.
 
-process_offer_worker(Cntl, Worker, State=#state{size={_, Max}, rooster=Rooster0, monitors=Monitors0, workers=Workers0}) ->
-	case maps:take(Cntl, Rooster0) of
-		{starting, Rooster1} when map_size(Rooster1)<Max ->
+process_offer_worker(Cntl, Worker, State0=#state{size={_, Max}, workers=Workers0}) ->
+	case take_rooster(Cntl, State0) of
+		{starting, State1=#state{rooster=Rooster}} when map_size(Rooster)<Max ->
 			hnc_workercntl:accepted(Cntl, Worker),
-			Rooster2=maps:put(Worker, idle, Rooster1),
+			State2=put_rooster(Worker, idle, State1),
 			WorkerRef=monitor(process, Worker),
 			Workers1=queue:in({Worker, stamp()}, Workers0),
-			Monitors1=maps:put(WorkerRef, worker, Monitors0),
-			process_waiting(State#state{rooster=Rooster2, workers=Workers1, monitors=Monitors1});
-		{starting, Rooster1} ->
+			State3=put_monitor(WorkerRef, worker, State2),
+			process_waiting(State3#state{workers=Workers1});
+		{starting, State1} ->
 			hnc_workercntl:rejected(Cntl, Worker),
-			State#state{rooster=Rooster1};
-		{returning, Rooster1} when map_size(Rooster1)<Max ->
+			State1;
+		{returning, State1=#state{rooster=Rooster}} when map_size(Rooster)<Max ->
 			hnc_workercntl:accepted(Cntl, Worker),
-			Rooster2=maps:put(Worker, idle, Rooster1),
+			State2=put_rooster(Worker, idle, State1),
 			Workers1=queue:in({Worker, stamp()}, Workers0),
-			process_waiting(State#state{rooster=Rooster2, workers=Workers1});
-		{returning, Rooster1} ->
+			process_waiting(State2#state{workers=Workers1});
+		{returning, State1} ->
 			hnc_workercntl:rejected(Cntl, Worker),
-			State#state{rooster=Rooster1};
+			State1;
 		_ ->
-			State
+			State0
 	end.
 
-do_return_worker(Worker, State=#state{on_return=OnReturn, cntl_sup=CntlSup, rooster=Rooster0, monitors=Monitors0}) ->
-	Rooster1=maps:remove(Worker, Rooster0),
+do_return_worker(Worker, State0=#state{on_return=OnReturn, cntl_sup=CntlSup}) ->
+	State1=remove_rooster(Worker, State0),
 	{ok, Returner}=hnc_workercntl_sup:return_worker(CntlSup, Worker, OnReturn),
 	ReturnerRef=monitor(process, Returner),
-	Monitors1=maps:put(ReturnerRef, {returner, Returner, Worker}, Monitors0),
-	Rooster2=maps:put(Returner, returning, Rooster1),
-	State#state{rooster=Rooster2, monitors=Monitors1}.
+	State2=put_monitor(ReturnerRef, {returner, Returner, Worker}, State1),
+	put_rooster(Returner, returning, State2).
+
+take_rooster(Key, State) ->
+	do_take(Key, #state.rooster, State).
+
+put_rooster(Key, Value, State) ->
+	do_put(Key, Value, #state.rooster, State).
+
+remove_rooster(Key, State) ->
+	do_remove(Key, #state.rooster, State).
+
+update_rooster(Key, Value, State) ->
+	do_update(Key, Value, #state.rooster, State).
+
+take_monitor(Key, State) ->
+	do_take(Key, #state.monitors, State).
+
+put_monitor(Key, Value, State) ->
+	do_put(Key, Value, #state.monitors, State).
+
+remove_monitor(Key, State) ->
+	do_remove(Key, #state.monitors, State).
+
+update_monitor(Key, Value, State) ->
+	do_update(Key, Value, #state.monitors, State).
+
+do_take(Key, Pos, State) ->
+	case maps:take(Key, element(Pos, State)) of
+		{Value, New} -> {Value, setelement(Pos, State, New)};
+		error -> error
+	end.
+
+do_put(Key, Value, Pos, State) ->
+	setelement(Pos, State, maps:put(Key, Value, element(Pos, State))).
+
+do_remove(Key, Pos, State) ->
+	setelement(Pos, State, maps:remove(Key, element(Pos, State))).
+
+do_update(Key, Value, Pos, State) ->
+	setelement(Pos, State, maps:update(Key, Value, element(Pos, State))).
+
+dequeue_waiting(State=#state{waiting=Waiting0}) ->
+	case queue:out(Waiting0) of
+		{empty, _} -> empty;
+		{{value, Item}, Waiting1} -> {Item, State#state{waiting=Waiting1}}
+	end.
+
+has_waiting(#state{waiting=Waiting}) ->
+	not queue:is_empty(Waiting).
+
+dequeue_worker(State=#state{workers=Workers0, strategy=Strategy}) ->
+	case
+		case Strategy of
+			fifo -> queue:out(Workers0);
+			lifo -> queue:out_r(Workers0)
+		end
+	of
+		{empty, _} -> empty;
+		{{value, Item}, Workers1} -> {Item, State#state{workers=Workers1}}
+	end.
+
+has_worker(#state{workers=Workers}) ->
+	not queue:is_empty(Workers).
+
+start_worker(State0=#state{cntl_sup=CntlSup}) ->
+	{ok, Starter}=hnc_workercntl_sup:start_worker(CntlSup),
+	StarterRef=monitor(process, Starter),
+	State1=put_monitor(StarterRef, {starter, Starter}, State0),
+	put_rooster(Starter, starting, State1).
+

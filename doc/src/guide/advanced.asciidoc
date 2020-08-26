@@ -1,0 +1,68 @@
+== Advanced Usage
+
+=== Automated worker cleanup
+
+When a worker returns to a pool, manually via `checkin/1,2`,
+after the end of a transaction, or automatically when it's owner
+dies, it may be in a "dirty" state, like file handles and network
+connections left open etc.
+
+While it is possible (yet tedious and error-prone) to do cleanup
+by hand when checking in manually or at the end of a transaction, this
+is hard to achieve when the worker returns because the owner process
+unexpectedly died. +
+Another option would be to clean up a worker _before_ using it, but this
+is again tedious, and it will remain in the "dirty" state between being
+returned and checked out again.
+
+To overcome this scenario, a 1-ary function can be specified in the `on_return`
+configuration option. The given function will be called with the returning
+worker as the single argument when it is returned to the pool, and it will only
+become available for another checkout after it has succeeded.
+
+[source,erlang]
+----
+OnReturn = fun (Worker) ->
+	logger:info("Worker ~p returned", [Worker])
+end,
+{ok, _} = hnc:start_pool(my_pool, #{on_return => {OnReturn, 1000}}, my_worker, undefined).
+----
+
+The value given as configuration option must be a 2-tuple, with the first element
+being the function and the second argument a maximum time (in milliseconds) for
+performing it (which may also be `infinity`).
+
+If the function exits normally, the worker is forthwith returned to the pool
+and becomes available for checkout.
+
+If the function times out or crashes for some reason, the worker is terminated, as
+it is then in an unknown state.
+
+=== Automated pool shrinking
+
+If your pool experiences peaks when many workers are requested, it will start new workers
+to satisfy those requests until the maximum allowed pool size is reached. Those workers
+are not stopped automatically, so when the usage of your pool becomes low again, there
+will be many workers around just idling away.
+
+To overcome this, a sweep interval may be configured with the `linger` option, causing the
+pool to periodically check for and stop idle workers.
+
+[source,erlang]
+----
+{ok, _} = hnc:start_pool(my_pool, #{linger => {60000, 300000}}, my_worker, undefined).
+----
+
+The value given must be a 2-tuple. The first element specifies how long (in milliseconds)
+a worker is allowed to be unused (ie, the time since it last returned to the pool). The
+second element specifies the interval (in milliseconds) between such checks.
+
+* The cleanup concerns only workers that are not checked out, and have been idle for the
+  given time.
+* It will always keep (ie, not stop) the minimum amount of workers specified in the `size`
+  configuration option.
+* When stopping workers, the cleanup will take the setting of the `strategy` configuration
+  option into consideration, ie it will preferrably stop those workers that are the least
+  likely to be checked out again. Specifically, with the `fifo` strategy it will stop those
+  workers that returned last, while with the `lifo` strategy it will stop those workers
+  that returned first.

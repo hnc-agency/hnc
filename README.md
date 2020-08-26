@@ -8,12 +8,16 @@ application:ensure_all_started(hnc).
 {ok, _}=hnc:start_pool(my_pool, #{}, my_worker, []).
 
 %% Check out a worker.
-Worker=hnc:checkout(my_pool).
+WorkerRef=hnc:checkout(my_pool).
 
-%% ... Do some stuff with the worker...
+%% Get the worker pid from the identifier.
+Worker=hnc:get_worker(WorkerRef).
+
+%% Do some stuff with the worker.
+my_worker:do_stuff(Worker).
 
 %% Check worker back in.
-ok=hnc:checkin(my_pool, Worker).
+ok=hnc:checkin(my_pool, WorkerRef).
 
 %% Stop the pool
 ok=hnc:stop_pool(my_pool).
