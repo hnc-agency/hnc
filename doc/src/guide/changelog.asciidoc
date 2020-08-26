@@ -1,0 +1,22 @@
+== Changelog
+
+=== 0.1.0
+
+First release.
+
+=== 0.2.0
+
+Mostly refactoring, cleanup, and some new features.
+
+* `give_away/3,4`: Designate another process as owner of a worker.
+
+* Only the process owning a worker is allowed to check it in.
+
+* Checking in and giving away from inside transactions is not possible
+  any more.
+
+* The API functions now work with worker identifiers instead of
+  worker pids. To get the "real" worker, `hnc:get_worker/1` must
+  be used to obtain the worker pid from the identifier.
+
+* Added documentation for embedded mode and advanced usage.

@@ -74,7 +74,7 @@ The pool identifier, as given in `start_pool/4`.
 
 [source,erlang]
 ----
-Worker = hnc:checkout(PoolName, Timeout).
+WorkerRef = hnc:checkout(PoolName, Timeout).
 ----
 
 `PoolName`::
@@ -84,26 +84,40 @@ The pool identifier, as given in `start_pool/4`.
 The maximum time allowed for the checkout. This
 argument is optional and defaults to `infinity`.
 
-`Worker`::
-A worker from the pool specified by `PoolName`.
+`WorkerRef`::
+The identifier of a worker from the pool specified by `PoolName`.
+
+The return value is a worker _identifier_ (to be used when checking
+it back in, giving it away, or querying it's status). To get the actual
+worker _pid_ to perform a task with, `hnc:get_worker(WorkerRef)` must be
+used.
 
 ==== Checking in a worker
 
 [source,erlang]
 ----
-ok = hnc:checkin(PoolName, Worker).
+Result = hnc:checkin(WorkerRef, Timeout).
 ----
 
-`PoolName`::
-The pool identifier, as given in `start_pool/4`.
+`WorkerRef`::
+The identifier of the worker to be returned, as returned by `checkout/1,2`.
 
-`Worker`::
-The worker to be returned to the pool specified by `PoolName`.
+`Timeout`::
+The maximum time allowed for the checkin. This argument
+is optional and defaults to `infinity`.
+
+`Result`::
+The result of the checkin operation, either `ok` on success, or `{error, not_owner}`
+if the process doing the checkin is not the current owner of the worker.
 
 ==== Transactions
 
 Transactions wrap checking out, performing some work with, and checking
 back in of workers.
+
+Note that the argument given to the transaction function is a worker _pid_,
+not a worker _identifier_. Thus, it is not possible to return or give away
+the worker from the transation function.
 
 [source,erlang]
 ----
@@ -136,22 +150,19 @@ and the worker will not be checked in when the original process dies.
 
 The process calling this function must be the current owner of the worker.
 
-The process receiving the worker is sent a message `{'HNC-WORKER-TRANSFER', Worker, FromPid, GiftData}`.
+The process receiving the worker is sent a message `{'HNC-WORKER-TRANSFER', WorkerRef, FromPid, GiftData}`.
 
 [source,erlang]
 ----
-Result = hnc:give_away(PoolName, Worker, OtherProcess, GiftData).
-Result = hnc:give_away(PoolName, Worker, OtherProcess, GiftData, Timeout).
+Result = hnc:give_away(WorkerRef, OtherProcess, GiftData).
+Result = hnc:give_away(WorkerRef, OtherProcess, GiftData, Timeout).
 ----
 
-`PoolName`::
-The pool identifier, as given in `start_pool/4`.
-
-`Worker`::
-The worker to be given to `OtherProcess`.
+`WorkerRef`::
+The identifier of the worker to be given away, as returned by `checkout/1,2`.
 
 `OtherProcess`::
-The process to give the `Worker` to.
+The other process to give the worker to.
 
 `GiftData`::
 Arbitrary term to send along with the transfer message.
@@ -160,10 +171,8 @@ Arbitrary term to send along with the transfer message.
 The maximum time allowed for the worker transfer operation.
 
 `Result`::
-The result of the operation, either `ok` on success, or an `{error, Reson`}` tuple
-with the reason being either `not_owner` if the process calling this function
-is not the current owner of the worker, or `not_found` if the worker is not
-hosted by the given pool.
+The result of the operation, either `ok` on success, or `{error, not_owner}`
+if the process calling this function is not the current owner of the worker.
 
 === Runtime configuration
 
@@ -268,14 +277,11 @@ The new pool linger.
 
 [source,erlang]
 ----
-WorkerStatus = hnc:worker_status(PoolName, Worker, Timeout).
+WorkerStatus = hnc:worker_status(WorkerRef, Timeout).
 ----
 
-`PoolName`::
-The pool identifier, as given in `start_pool/4`.
-
-`Worker`::
-The worker whose status to retrieve.
+`WorkerRef`::
+The identifier of the worker whose status to retrieve, as returned by `checkout/1,2`.
 
 `Timeout`::
 The maximum time allowed to fetch the status. This

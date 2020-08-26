@@ -20,7 +20,7 @@ interacting with pools.
 === Interaction
 
 * checkout/1,2 - Request a worker from a pool
-* checkin/2 - Return a worker to a pool
+* checkin/1,2 - Return a worker to a pool
 * transaction/2,3 - Execute a function using a worker from a pool
 
 === Runtime configuration
@@ -34,13 +34,15 @@ interacting with pools.
 
 === Introspection
 
-* worker_status/2,3 - Get the status of a worker
+* worker_status/1,2 - Get the status of a worker
 * pool_status/1,2 - Get the status of a pool
 
 == Types
 
 [source,erlang]
 ----
+worker_ref() = term()
+
 pool() = atom()
 
 worker() = pid()
@@ -221,13 +223,13 @@ Note that for this to work, the `hnc` application _must_ also be started.
 
 [source,erlang]
 ----
-Worker = hnc:checkout(PoolName).
-Worker = hnc:checkout(PoolName, Timeout).
+WorkerRef = hnc:checkout(PoolName).
+WorkerRef = hnc:checkout(PoolName, Timeout).
 ----
 
 PoolName = pool():: Pool identifier as given in `start_pool/4`.
 Timeout = timeout():: Maximum time to wait for the checkout to succeed.
-Worker = worker():: A worker checked out from the pool.
+WorkerRef = worker_ref():: The identifier of the worker that was checked out from the pool.
 
 Checks out a worker from the pool. If the pool has `idle` workers available,
 it will return one of them. Which of the available workers is picked depends
@@ -239,17 +241,24 @@ option, the pool will start a new worker. Otherwise, the calling process is
 blocked until either a worker is returned to the pool, or the given `Timeout`
 expires.
 
+This function does not return a worker _pid_ but a worker _identifier_, which
+can the be given to the `get_worker/1` function in order to retrieve the actual
+worker.
+
 === Checking in a worker
 
 [source,erlang]
 ----
-ok = hnc:checkin(PoolName, Worker).
+Result = hnc:checkin(WorkerRef).
+Result = hnc:checkin(WorkerRef, Timeout).
 ----
 
-PoolName = pool():: Pool identifier as given in `start_pool/4`.
-Worker = worker():: The worker to be checked in to the pool.
+WorkerRef = worker_ref():: The identifier of the worker to be checkedi back in, as returned by `checkout/1,2`.
+Timeout = timeout():: Maximum time to wait for the checkin to succeed.
+Result = ok | {error, Reason}:: The result of the `checkin` operation.
+Reason = not_owner | not_found:: If checking in failed, the reason for the failure.
 
-Returns the given worker to the pool.
+Returns the worker identified by the given `WorkerRef` to the pool.
 
 If a callback function was given in the `on_return` configuration option,
 it will be called with the worker Pid as the single argument, in order to perform
@@ -257,6 +266,9 @@ any necessary cleanup, and the worker will become available only after it has
 finished. If this function does not finish within the timeout given along with
 it in the `on_return` option, the worker is killed and removed from the pool, as
 it is then assumed to be in an undefined state.
+
+Returns `ok` on success. If the process doing the checkin is not the current owner
+of the worker, `{error, not_owner}` is returned.
 
 === Performing a transaction
 
@@ -269,9 +281,9 @@ Result = hnc:transaction(PoolName, Transaction, Timeout).
 PoolName = pool():: Pool identifier as given in `start_pool/4`.
 Transaction = transaction_fun(Result):: The transaction function to perform using a worker from the pool.
 Timeout = timeout():: Maximum time to wait before a worker becomes available.
-Result = term():: Result of the transaction.
+Result = term():: Result of the transaction, as returned by the transction function.
 
-Checks out a worker, calls the given `Transaction` function with this worker as the single
+Checks out a worker, calls the given `Transaction` function with that worker as the single
 argument, and checks the worker back in. The return value of `transaction/2,3` is the result
 of the `Transaction` function.
 
@@ -285,25 +297,22 @@ If you want the worker to remain checked out, you may give it away to another pr
 
 [source,erlang]
 ----
-Result = hnc:give_away(PoolName, Worker, NewUser, GiftData).
-Result = hnc:give_away(PoolName, Worker, NewUser, GiftData, Timeout).
+Result = hnc:give_away(WorkerRef, NewUser, GiftData).
+Result = hnc:give_away(WorkerRef, NewUser, GiftData, Timeout).
 ----
 
-PoolName = pool():: Pool identifier as given in `start_pool/4`.
-Worker = worker():: The worker to be transferred to `NewUser`.
+WorkerRef = worker_ref():: The identifier of the worker to be transferred to `NewUser`, as returned by `checkout/1,2`.
 NewUser = pid():: The pid of the process to give the worker to.
 GiftData = term():: Additional data to send to the new user.
 Timeout = timeout():: Maximum time to wait before a worker becomes available.
 Result = ok | {error, Reason}:: The result of the `give_away` operation.
 Reason = not_owner | not_found:: If giving away failed, the reason for the failure.
 
-On success, `ok` is returned. Additionally, the process that is to receive the worker
-is sent a message `{'HNC-WORKER-TRANSFER', Worker, FromPid, GiftData}`.
+On success, `ok` is returned. Additionally, the new owner process is sent a message
+`{'HNC-WORKER-TRANSFER', WorkerRef, FromPid, GiftData}`.
 
 If the process calling this function is not the owner of the worker, `{error, not_owner}`
 is returned.
-
-If the worker is not hosted by this pool, `{error, not_found}` is returned.
 
 === Getting and setting the checkout strategy
 
@@ -357,12 +366,11 @@ Retrieve or change the `linger` setting of the pool.
 
 [source,erlang]
 ----
-Status = hnc:worker_status(PoolName, Worker).
-Status = hnc:worker_status(PoolName, Worker, Timeout).
+Status = hnc:worker_status(WorkerRef).
+Status = hnc:worker_status(WorkerRef, Timeout).
 ----
 
-PoolName = pool():: Pool identifier as given in `start_pool/4`.
-Worker = worker():: The worker whose status to query.
+WorkerRef = worker_ref():: The identifier of the worker whose status to query.
 Timeout = timeout():: Maximum time to wait.
 Status = worker_status() | undefined:: The status of the given worker of the given pool.
 
@@ -371,8 +379,6 @@ Retrieve the status of the given worker.
 * `idle`: checked in and available.
 * `out`: checked out and not available.
 * `returning`: returning, ie checked in but not yet available.
-
-If the given worker is not a member of the pool, `undefined` is returned.
 
 === Querying the pool status
 
