@@ -19,7 +19,6 @@
 
 -export([start_link/4]).
 -export([start_worker_sup/4]).
--export([start_cntl_sup/3]).
 -export([init/1]).
 
 -spec start_link(hnc:pool(), hnc:opts(), module(), term()) -> {ok, pid()}.
@@ -33,18 +32,6 @@ start_worker_sup(Sup, Mod, Args, Shutdown) ->
 		#{
 			id => hnc_worker_sup,
 			start => {hnc_worker_sup, start_link, [Mod, Args, Shutdown]},
-			restart => permanent,
-			type => supervisor
-		}
-	).
-
--spec start_cntl_sup(pid(), pid(), pid()) -> {ok, pid()}.
-start_cntl_sup(Sup, Pool, WorkerSup) ->
-	supervisor:start_child(
-		Sup,
-		#{
-			id => hnc_workercntl_sup,
-			start => {hnc_workercntl_sup, start_link, [Pool, WorkerSup]},
 			restart => permanent,
 			type => supervisor
 		}

@@ -20,3 +20,18 @@ Mostly refactoring, cleanup, and some new features.
   be used to obtain the worker pid from the identifier.
 
 * Added documentation for embedded mode and advanced usage.
+
+=== 0.3.0
+
+Mostly refactoring and cleanup.
+
+* `prune/1`: Shrink the pool by evicting idle workers.
+
+* Starting, returning and stopping workers has been implemented
+  into the `hnc_pool` module/process itself, removing the need
+  for the `hnc_workercntl` and `hnc_workercntl_sup` modules/processes.
+
+* The pool rooster is now an `ets` table, not a `map`.
+
+* The pool does not wait for the initial workers to complete their
+  startup before becoming operationali any more.

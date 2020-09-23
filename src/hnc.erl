@@ -24,6 +24,7 @@
 -export([get_worker/1]).
 -export([give_away/3, give_away/4]).
 -export([pool_status/1, pool_status/2]).
+-export([prune/1]).
 -export([set_linger/2]).
 -export([set_size/2]).
 -export([set_strategy/2]).
@@ -185,6 +186,10 @@ pool_status(Pool) ->
 -spec pool_status(pool(), timeout()) -> pool_status().
 pool_status(Pool, Timeout) ->
 	hnc_pool:pool_status(Pool, Timeout).
+
+-spec prune(pool()) -> ok.
+prune(Pool) ->
+	hnc_pool:prune(Pool).
 
 -spec worker_status(worker_ref()) -> worker_status() | undefined.
 worker_status(WorkerRef) ->

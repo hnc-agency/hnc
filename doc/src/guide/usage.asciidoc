@@ -1,7 +1,7 @@
 == Usage
 
 Before `hnc` can be used to create and manage pools, the `hnc`
-application must be started first.
+application must be started.
 
 [source,erlang]
 ----
@@ -237,7 +237,7 @@ The pool identifier, as given in `start_pool/4`.
 The new pool size.
 
 Changing the pool size has no immediate effect, ie no
-workers will be started and stopped. Instead, the number
+workers will be started or stopped. Instead, the number
 of hosted workers will converge on the new settings as
 pool operations happen.
 
@@ -270,6 +270,20 @@ The pool identifier, as given in `start_pool/4`.
 
 `Linger`::
 The new pool linger.
+
+==== Pruning a pool
+
+[source,erlang]
+----
+ok = hnc:prune(PoolName).
+----
+
+`PoolName`::
+The pool identifier, as given in `start_pool/4`.
+
+Pruning the pool stops all idle workers, but makes sure that at least
+the minimum number of workers, as specified by the `size` option,
+remains in the pool.
 
 === Querying status
 

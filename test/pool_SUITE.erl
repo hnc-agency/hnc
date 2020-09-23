@@ -38,6 +38,7 @@ all() ->
 		give_away,
 		give_away_unknown,
 		give_away_not_owner,
+		prune,
 		linger,
 		change_opts,
 		proxy,
@@ -46,7 +47,8 @@ all() ->
 
 checkout_checkin(_) ->
 	doc("Ensure that checking workers out and back in works."),
-	{ok, _}=hnc:start_pool(test, #{size=>{3, 5}}, hnc_test_worker, undefined),
+	{ok, _}=do_start_pool(test, #{size=>{3, 5}}, hnc_test_worker, undefined),
+	timer:sleep(1000),
 	#{idle:=3, out:=0, starting:=0, returning:=0}=hnc:pool_status(test),
 	WRef=hnc:checkout(test),
 	W=hnc:get_worker(WRef),
@@ -62,14 +64,14 @@ checkout_checkin(_) ->
 
 checkin_unknown(_) ->
 	doc("Ensure that checking in an unknown worker is rejected."),
-	{ok, _}=hnc:start_pool(test, #{}, hnc_test_worker, undefined),
+	{ok, _}=do_start_pool(test, #{}, hnc_test_worker, undefined),
 	{error, not_found}=hnc:checkin(do_fake_wref(test, self())),
 	ok=hnc:stop_pool(test),
 	ok.
 
 checkin_not_owner(_) ->
 	doc("Ensure that only the owner of a worker can check it in."),
-	{ok, _}=hnc:start_pool(test, #{}, hnc_test_worker, undefined),
+	{ok, _}=do_start_pool(test, #{}, hnc_test_worker, undefined),
 	Self=self(),
 	Pid=spawn_link(
 		fun () ->
@@ -85,7 +87,7 @@ checkin_not_owner(_) ->
 
 transaction(_) ->
 	doc("Ensure that transactions work."),
-	{ok, _}=hnc:start_pool(test, #{}, hnc_test_worker, undefined),
+	{ok, _}=do_start_pool(test, #{}, hnc_test_worker, undefined),
 	"TEST"=hnc:transaction(
 		test,
 		fun (W) ->
@@ -99,7 +101,7 @@ transaction(_) ->
 
 strategy_fifo(_) ->
 	doc("Ensure that checking out with the fifo strategy works."),
-	{ok, _}=hnc:start_pool(test, #{strategy=>fifo, size=>{2, 2}}, hnc_test_worker, undefined),
+	{ok, _}=do_start_pool(test, #{strategy=>fifo, size=>{2, 2}}, hnc_test_worker, undefined),
 	W1=hnc:checkout(test),
 	W2=hnc:checkout(test),
 	ok=hnc:checkin(W2),
@@ -115,7 +117,7 @@ strategy_fifo(_) ->
 
 strategy_lifo(_) ->
 	doc("Ensure that checking out with the lifo strategy works."),
-	{ok, _}=hnc:start_pool(test, #{strategy=>lifo, size=>{2, 2}}, hnc_test_worker, undefined),
+	{ok, _}=do_start_pool(test, #{strategy=>lifo, size=>{2, 2}}, hnc_test_worker, undefined),
 	W1=hnc:checkout(test),
 	W2=hnc:checkout(test),
 	ok=hnc:checkin(W2),
@@ -130,7 +132,7 @@ strategy_lifo(_) ->
 
 blocking(_) ->
 	doc("Ensure that a pool blocks checkout requests when it is at max."),
-	{ok, _}=hnc:start_pool(test, #{size=>{0, 1}}, hnc_test_worker, undefined),
+	{ok, _}=do_start_pool(test, #{size=>{0, 1}}, hnc_test_worker, undefined),
 	#{idle:=0, out:=0, starting:=0, returning:=0}=hnc:pool_status(test),
 	_=hnc:checkout(test),
 	#{idle:=0, out:=1, starting:=0, returning:=0}=hnc:pool_status(test),
@@ -146,7 +148,7 @@ blocking(_) ->
 
 blocking_userdeath(_) ->
 	doc("Ensure that a pool serves a blocked checkout request when the user that owns a checked out worker dies."),
-	{ok, _}=hnc:start_pool(test, #{size=>{0, 1}}, hnc_test_worker, undefined),
+	{ok, _}=do_start_pool(test, #{size=>{0, 1}}, hnc_test_worker, undefined),
 	#{idle:=0, out:=0, starting:=0, returning:=0}=hnc:pool_status(test),
 	Self=self(),
 	Pid=spawn_link(
@@ -168,7 +170,7 @@ blocking_userdeath(_) ->
 
 blocking_workerdeath(_) ->
 	doc("Ensure that a pool serves a blocked checkout request when the checked out worker dies."),
-	{ok, _}=hnc:start_pool(test, #{size=>{0, 1}}, hnc_test_worker, undefined),
+	{ok, _}=do_start_pool(test, #{size=>{0, 1}}, hnc_test_worker, undefined),
 	#{idle:=0, out:=0, starting:=0, returning:=0}=hnc:pool_status(test),
 	Self=self(),
 	Pid=spawn_link(
@@ -196,7 +198,7 @@ on_return(_) ->
 	doc("Ensure that an on_return callback works."),
 	Self=self(),
 	Tag=make_ref(),
-	{ok, _}=hnc:start_pool(test, #{on_return => {fun (Worker) -> Self ! {Tag, Worker} end, 1000}}, hnc_test_worker, undefined),
+	{ok, _}=do_start_pool(test, #{on_return => {fun (Worker) -> Self ! {Tag, Worker} end, 1000}}, hnc_test_worker, undefined),
 	WRef=hnc:checkout(test),
 	W=hnc:get_worker(WRef),
 	ok=hnc:checkin(WRef),
@@ -208,7 +210,7 @@ on_return_timeout(_) ->
 	doc("Ensure that when an on_return callback times out it takes down the worker."),
 	Self=self(),
 	Tag=make_ref(),
-	{ok, _}=hnc:start_pool(test, #{on_return => {fun (Worker) -> Self ! {Tag, Worker}, timer:sleep(1000) end, 100}}, hnc_test_worker, undefined),
+	{ok, _}=do_start_pool(test, #{on_return => {fun (Worker) -> Self ! {Tag, Worker}, timer:sleep(1000) end, 100}}, hnc_test_worker, undefined),
 	WRef=hnc:checkout(test),
 	W=hnc:get_worker(WRef),
 	Ref=monitor(process, W),
@@ -222,13 +224,13 @@ on_return_funcrash(_) ->
 	doc("Ensure that when an on_return callback crashes it takes down the worker."),
 	Self=self(),
 	Tag=make_ref(),
-	{ok, _}=hnc:start_pool(test, #{on_return => {fun (Worker) -> Self ! {Tag, Worker}, exit(crash) end, 1000}}, hnc_test_worker, undefined),
+	{ok, _}=do_start_pool(test, #{on_return => {fun (Worker) -> Self ! {Tag, Worker}, exit(crash) end, 1000}}, hnc_test_worker, undefined),
 	WRef=hnc:checkout(test),
 	W=hnc:get_worker(WRef),
 	Ref=monitor(process, W),
 	ok=hnc:checkin(WRef),
 	ok=receive {Tag, W} -> ok after 1000 -> exit(timeout) end,
-	ok=receive {'DOWN', Ref, process, W, killed} -> ok after 1000 -> exit(timeout) end,
+	ok=receive {'DOWN', Ref, process, W, crash} -> ok after 1000 -> exit(timeout) end,
 	ok=hnc:stop_pool(test),
 	ok.
 
@@ -242,7 +244,7 @@ on_return_workercrash(_) ->
 		Worker ! crash,
 		ok=receive {Self, ok} -> ok after 1000 -> exit(timeout) end
 	end,
-	{ok, _}=hnc:start_pool(test, #{on_return => {ReturnFun, 1000}}, hnc_test_worker, undefined),
+	{ok, _}=do_start_pool(test, #{on_return => {ReturnFun, 1000}}, hnc_test_worker, undefined),
 	WRef=hnc:checkout(test),
 	W=hnc:get_worker(WRef),
 	Ref=monitor(process, W),
@@ -251,14 +253,14 @@ on_return_workercrash(_) ->
 	Ref2=monitor(process, Returner),
 	Returner ! {self(), ok},
 	ok=receive {'DOWN', Ref, process, W, crash} -> ok after 1000 -> exit(timeout) end,
-	ok=receive {'DOWN', Ref2, process, Returner, killed} -> ok after 1000 -> exit(timeout) end,
+	ok=receive {'DOWN', Ref2, process, Returner, crash} -> ok after 1000 -> exit(timeout) end,
 	ok=hnc:stop_pool(test),
 	ok.
 
 give_away(_) ->
 	doc("Ensure that giving away a worker works."),
 	Self=self(),
-	{ok, _}=hnc:start_pool(test, #{}, hnc_test_worker, undefined),
+	{ok, _}=do_start_pool(test, #{}, hnc_test_worker, undefined),
 	Pid=spawn_link(
 		fun () ->
 			WRef=hnc:checkout(test),
@@ -279,14 +281,14 @@ give_away(_) ->
 
 give_away_unknown(_) ->
 	doc("Ensure that giving away an unknown worker is rejected."),
-	{ok, _}=hnc:start_pool(test, #{}, hnc_test_worker, undefined),
+	{ok, _}=do_start_pool(test, #{}, hnc_test_worker, undefined),
 	{error, not_found}=hnc:give_away(do_fake_wref(test, self()), self(), undefined),
 	ok=hnc:stop_pool(test),
 	ok.
 
 give_away_not_owner(_) ->
 	doc("Ensure that only the owner of a worker can give it away."),
-	{ok, _}=hnc:start_pool(test, #{}, hnc_test_worker, undefined),
+	{ok, _}=do_start_pool(test, #{}, hnc_test_worker, undefined),
 	Self=self(),
 	Pid=spawn_link(
 		fun () ->
@@ -301,9 +303,30 @@ give_away_not_owner(_) ->
 	ok=hnc:stop_pool(test),
 	ok.
 
+prune(_) ->
+	doc("Ensure that pruning a pool works."),
+	{ok, _}=do_start_pool(test, #{size=>{1, 2}}, hnc_test_worker, undefined),
+	WRef1=hnc:checkout(test),
+	WRef2=hnc:checkout(test),
+	#{idle:=0, out:=2, starting:=0, returning:=0}=hnc:pool_status(test),
+	ok=hnc:checkin(WRef1),
+	ok=hnc:checkin(WRef2),
+	WMon1=monitor(process, hnc:get_worker(WRef1)),
+	WMon2=monitor(process, hnc:get_worker(WRef2)),
+	#{idle:=2, out:=0, starting:=0, returning:=0}=hnc:pool_status(test),
+	ok=hnc:prune(test),
+	ok=receive
+		{'DOWN', WMon1, process, _, _} -> ok;
+		{'DOWN', WMon2, process, _, _} -> ok
+	after 1000 -> exit(timeout)
+	end,
+	#{idle:=1, out:=0, starting:=0, returning:=0}=hnc:pool_status(test),
+	ok=hnc:stop_pool(test),
+	ok.
+
 linger(_) ->
-	doc("Ensure that a pool is drops idle workers after the linger time has expired."),
-	{ok, _}=hnc:start_pool(test, #{size=>{1, 2}, linger=>{10, 100}}, hnc_test_worker, undefined),
+	doc("Ensure that a pool drops idle workers after the linger time has expired."),
+	{ok, _}=do_start_pool(test, #{size=>{1, 2}, linger=>{10, 100}}, hnc_test_worker, undefined),
 	WRef1=hnc:checkout(test),
 	WRef2=hnc:checkout(test),
 	#{idle:=0, out:=2, starting:=0, returning:=0}=hnc:pool_status(test),
@@ -317,7 +340,7 @@ linger(_) ->
 
 change_opts(_) ->
 	doc("Ensure that changing options at runtime works."),
-	{ok, _}=hnc:start_pool(test, #{}, hnc_test_worker, undefined),
+	{ok, _}=do_start_pool(test, #{}, hnc_test_worker, undefined),
 	ok=hnc:set_strategy(test, fifo),
 	fifo=hnc:get_strategy(test),
 	ok=hnc:set_strategy(test, lifo),
@@ -336,7 +359,7 @@ change_opts(_) ->
 proxy(_) ->
 	doc("Ensure that worker proxies work."),
 	[hnc_test_worker]=hnc_test_workerproxy:get_modules(),
-	{ok, PoolSup}=hnc:start_pool(test, #{}, hnc_test_workerproxy, undefined),
+	{ok, PoolSup}=do_start_pool(test, #{}, hnc_test_workerproxy, undefined),
 	[WorkerSup]=[Pid || {hnc_worker_sup, Pid, supervisor, _} <- supervisor:which_children(PoolSup)],
 	{ok,
 		#{
@@ -357,6 +380,11 @@ embedded(_) ->
 	#{out:=0}=hnc:pool_status(test),
 	exit(EmbeddedSup, normal),
 	ok.
+
+do_start_pool(PoolName, PoolOpts, WorkerMod, WorkerArgs) ->
+	R=hnc:start_pool(PoolName, PoolOpts, WorkerMod, WorkerArgs),
+	timer:sleep(100),
+	R.
 
 do_fake_wref(Pool, Worker) ->
 	{worker_ref, Pool, Worker}.
