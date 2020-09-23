@@ -11,4 +11,6 @@ include::advanced.asciidoc[Advanced]
 
 include::embedded.asciidoc[Embedded Mode]
 
+include::misc.asciidoc[Miscellaneous]
+
 include::changelog.asciidoc[Changelog]

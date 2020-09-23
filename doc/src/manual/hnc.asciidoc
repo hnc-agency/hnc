@@ -31,6 +31,7 @@ interacting with pools.
 * set_size/2 - Change the size of a pool
 * get_linger/1,2 - Get the current self-cleaning interval of a pool
 * set_linger/2 - Change the self-cleaning interval of a pool
+* prune/1 - Stop all idle workers
 
 === Introspection
 
@@ -361,6 +362,19 @@ Timeout = timeout():: Maximum time to wait.
 Linger = linger():: The linger time for workers of the given pool.
 
 Retrieve or change the `linger` setting of the pool.
+
+=== Pruning
+
+[source,erlang]
+----
+ok = hnc:prune(PoolName).
+----
+
+PoolName = pool():: Pool identifier as given in `start_pool/4`.
+
+Stop all idle workers in the pool, but keep at least the
+minimum number of workers, as specified by the `size` option,
+in total.
 
 === Querying the status of a worker
 
