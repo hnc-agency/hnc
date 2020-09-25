@@ -61,7 +61,7 @@
 		linger :: hnc:linger(),
 		on_return :: hnc:on_return(),
 		sweep_ref :: undefined | reference(),
-		worker_sup :: undefined | pid(),
+		worker_sup_sup :: undefined | pid(),
 		rooster :: ets:tab(),
 		workers :: queue:queue(#worker{}),
 		users :: #{pid() => #user{}},
@@ -79,6 +79,7 @@ checkout(Pool, Timeout) ->
 	case gen_statem:call(Pool, {checkout, self(), Timeout}) of
 		{ok, Worker} -> Worker;
 		{error, timeout} -> exit(timeout);
+		{error, Reason} -> error(Reason);
 		Other -> exit({unexpected, Other})
 	end.
 
@@ -157,15 +158,15 @@ init({Parent, Opts, WorkerMod, WorkerArgs}) ->
 	}.
 
 handle_event(cast, {setup, Parent, WorkerMod, WorkerArgs, Shutdown}, setup, State) ->
-	{ok, WorkerSup}=hnc_pool_sup:start_worker_sup(Parent, WorkerMod, WorkerArgs, Shutdown),
+	{ok, WorkerSupSup}=hnc_pool_sup:start_worker_sup_sup(Parent, WorkerMod, WorkerArgs, Shutdown),
 	gen_statem:cast(self(), init),
-	{keep_state, State#state{worker_sup=WorkerSup}};
+	{keep_state, State#state{worker_sup_sup=WorkerSupSup}};
 handle_event(cast, init, setup, State=#state{size={0, _}}) ->
 	{next_state, running, State};
-handle_event(cast, init, setup, State=#state{linger=Linger, size={Min, _}, worker_sup=WorkerSup, rooster=Rooster, cntls=Cntls0}) ->
+handle_event(cast, init, setup, State=#state{linger=Linger, size={Min, _}, worker_sup_sup=WorkerSupSup, rooster=Rooster, cntls=Cntls0}) ->
 	Cntls1=lists:foldl(
 		fun (_, Acc) ->
-			start_worker(WorkerSup, Rooster, Acc)
+			start_worker(WorkerSupSup, Rooster, Acc)
 		end,
 		Cntls0,
 		lists:seq(1, Min)
@@ -196,7 +197,7 @@ handle_event({call, From}, {worker_status, Worker}, running, #state{rooster=Roos
 	spawn(
 		fun () ->
 			Status=case ets:lookup(Rooster, Worker) of
-				[{Worker, _, WorkerStatus, _}] ->
+				[{Worker, _, _, WorkerStatus, _}] ->
 					WorkerStatus;
 				[] ->
 					undefined
@@ -212,10 +213,10 @@ handle_event({call, From}, pool_status, running, #state{rooster=Rooster}) ->
 		end
 	),
 	keep_state_and_data;
-handle_event({call, From}, {checkout, User, Timeout}, running, State=#state{strategy=Strategy, size={_, Max}, worker_sup=WorkerSup, rooster=Rooster, workers=Workers0, users=Users0, waiting=Waiting0, cntls=Cntls0}) ->
+handle_event({call, From}, {checkout, User, Timeout}, running, State=#state{strategy=Strategy, size={_, Max}, worker_sup_sup=WorkerSupSup, rooster=Rooster, workers=Workers0, users=Users0, waiting=Waiting0, cntls=Cntls0}) ->
 	case dequeue(Workers0, Strategy) of
 		{#worker{worker=Worker}, Workers1} ->
-			ets:update_element(Rooster, Worker, [{3, out}, {4, User}]),
+			ets:update_element(Rooster, Worker, [{4, out}, {5, User}]),
 			gen_statem:reply(From, {ok, Worker}),
 			Users1=add_user_worker(User, Worker, Users0),
 			{keep_state, State#state{workers=Workers1, users=Users1}};
@@ -228,7 +229,7 @@ handle_event({call, From}, {checkout, User, Timeout}, running, State=#state{stra
 			Waiting1=queue:in(#waiter{reply_to=From, user=User}, Waiting0),
 			Cntls1=case Max=:=infinity orelse ets:info(Rooster, size)<Max of
 				true ->
-					start_worker(WorkerSup, Rooster, Cntls0);
+					start_worker(WorkerSupSup, Rooster, Cntls0);
 				false ->
 					Cntls0
 			end,
@@ -240,7 +241,7 @@ handle_event({call, From}, {checkout, User, Timeout}, running, State=#state{stra
 			Waiting1=queue:in(#waiter{reply_to=From, user=User, timer=TRef}, Waiting0),
 			Cntls1=case Max=:=infinity orelse ets:info(Rooster, size)<Max of
 				true ->
-					start_worker(WorkerSup, Rooster, Cntls0);
+					start_worker(WorkerSupSup, Rooster, Cntls0);
 				false ->
 					Cntls0
 			end,
@@ -262,12 +263,12 @@ handle_event(info, {checkout_timeout, User, ReplyTo}, running, State=#state{wait
 	{keep_state, State#state{waiting=Waiting1, users=Users2}};
 handle_event({call, From}, {checkin, Worker, User}, running, State=#state{on_return=OnReturn, rooster=Rooster, users=Users0, cntls=Cntls0}) ->
 	case ets:lookup(Rooster, Worker) of
-		[{Worker, _Ref, out, User}] ->
+		[{Worker, _Ref, _, out, User}] ->
 			gen_statem:reply(From, ok),
 			Cntls1=return_worker(Worker, OnReturn, Cntls0),
 			Users1=remove_user_worker(User, Worker, Users0),
 			{keep_state, State#state{users=Users1, cntls=Cntls1}};
-		[{Worker, _Ref, out, _OtherUser}] ->
+		[{Worker, _Ref, _, out, _OtherUser}] ->
 			gen_statem:reply(From, {error, not_owner}),
 			keep_state_and_data;
 		_ ->
@@ -276,67 +277,67 @@ handle_event({call, From}, {checkin, Worker, User}, running, State=#state{on_ret
 	end;
 handle_event({call, From}, {give_away, Worker, OldUser, NewUser}, running, State=#state{rooster=Rooster, users=Users0}) ->
 	case ets:lookup(Rooster, Worker) of
-		[{Worker, _Ref, out, OldUser}] ->
+		[{Worker, _Ref, _, out, OldUser}] ->
 			gen_statem:reply(From, ok),
-			ets:update_element(Rooster, Worker, {4, NewUser}),
+			ets:update_element(Rooster, Worker, {5, NewUser}),
 			Users1=remove_user_worker(OldUser, Worker, Users0),
 			Users2=add_user_worker(NewUser, Worker, Users1),
 			{keep_state, State#state{users=Users2}};
-		[{Worker, _Ref, out, _OtherUser}] ->
+		[{Worker, _Ref, _, out, _OtherUser}] ->
 			gen_statem:reply(From, {error, not_owner}),
 			keep_state_and_data;
 		_ ->
 			gen_statem:reply(From, {error, not_found}),
 			keep_state_and_data
 	end;
-handle_event(info, {started_worker, Cntl, Worker}, running, State=#state{size={_, Max}, worker_sup=WorkerSup, rooster=Rooster, workers=Workers0, users=Users0, waiting=Waiting0, cntls=Cntls0}) ->
+handle_event(info, {started_worker, Cntl, WorkerSup, Worker}, running, State=#state{size={_, Max}, worker_sup_sup=WorkerSupSup, rooster=Rooster, workers=Workers0, users=Users0, waiting=Waiting0, cntls=Cntls0}) ->
 	{#starter_cntl{ref=CntlRef}, Cntls1}=maps:take(Cntl, Cntls0),
 	demonitor(CntlRef, [flush]),
 	ets:delete(Rooster, Cntl),
 	case Max=:=infinity orelse ets:info(Rooster, size)=<Max of
 		true ->
 			Ref=monitor(process, Worker),
-			ets:insert_new(Rooster, {Worker, Ref, idle, undefined}),
+			ets:insert_new(Rooster, {Worker, Ref, WorkerSup, idle, undefined}),
 			{Workers1, Users1, Waiting1}=idle_or_assign_worker(undefined, Worker, Rooster, Workers0, Users0, Waiting0),
 			{keep_state, State#state{workers=Workers1, users=Users1, waiting=Waiting1, cntls=Cntls1}};
 		false ->
-			Workers1=stop_worker(WorkerSup, Worker, Rooster, Workers0),
+			Workers1=stop_worker(WorkerSupSup, Worker, Rooster, Workers0),
 			{keep_state, State#state{workers=Workers1, cntls=Cntls1}}
 	end;
-handle_event(info, {returned_worker, Cntl, Worker}, running, State=#state{size={_, Max}, worker_sup=WorkerSup, rooster=Rooster, workers=Workers0, users=Users0, waiting=Waiting0, cntls=Cntls0}) ->
+handle_event(info, {returned_worker, Cntl, Worker}, running, State=#state{size={_, Max}, worker_sup_sup=WorkerSupSup, rooster=Rooster, workers=Workers0, users=Users0, waiting=Waiting0, cntls=Cntls0}) ->
 	{#returner_cntl{ref=CntlRef, worker=Worker}, Cntls1}=maps:take(Cntl, Cntls0),
 	demonitor(CntlRef, [flush]),
 	case Max=:=infinity orelse ets:info(Rooster, size)=<Max of
 		true ->
-			ets:update_element(Rooster, Worker, [{3, idle}, {4, undefined}]),
+			ets:update_element(Rooster, Worker, [{4, idle}, {5, undefined}]),
 			{Workers1, Users1, Waiting1}=idle_or_assign_worker(undefined, Worker, Rooster, Workers0, Users0, Waiting0),
 			{keep_state, State#state{workers=Workers1, users=Users1, waiting=Waiting1, cntls=Cntls1}};
 		false ->
-			Workers1=stop_worker(WorkerSup, Worker, Rooster, Workers0),
+			Workers1=stop_worker(WorkerSupSup, Worker, Rooster, Workers0),
 			{keep_state, State#state{workers=Workers1, cntls=Cntls1}}
 	end;
-handle_event(info, {sweep_idle, SweepRef0}, running, State=#state{strategy=Strategy, size={Min, _}, linger=Linger={LingerTime, _}, sweep_ref=SweepRef0, worker_sup=WorkerSup, rooster=Rooster, workers=Workers0}) ->
+handle_event(info, {sweep_idle, SweepRef0}, running, State=#state{strategy=Strategy, size={Min, _}, linger=Linger={LingerTime, _}, sweep_ref=SweepRef0, worker_sup_sup=WorkerSupSup, rooster=Rooster, workers=Workers0}) ->
 	Treshold=stamp(-LingerTime),
-	Workers1=prune_workers(Min, Treshold, Strategy, WorkerSup, Rooster, Workers0),
+	Workers1=prune_workers(Min, Treshold, Strategy, WorkerSupSup, Rooster, Workers0),
 	SweepRef1=schedule_sweep_idle(Linger),
 	{keep_state, State#state{sweep_ref=SweepRef1, workers=Workers1}};
-handle_event(cast, prune, running, State=#state{strategy=Strategy, size={Min, _}, worker_sup=WorkerSup, rooster=Rooster, workers=Workers0}) ->
+handle_event(cast, prune, running, State=#state{strategy=Strategy, size={Min, _}, worker_sup_sup=WorkerSupSup, rooster=Rooster, workers=Workers0}) ->
 	Treshold=stamp(),
-	Workers1=prune_workers(Min, Treshold, Strategy, WorkerSup, Rooster, Workers0),
+	Workers1=prune_workers(Min, Treshold, Strategy, WorkerSupSup, Rooster, Workers0),
 	{keep_state, State#state{workers=Workers1}};
-handle_event(info, {'DOWN', Ref, process, Pid, Reason}, running, State=#state{size={_, Max}, worker_sup=WorkerSup, rooster=Rooster, workers=Workers0, users=Users0, waiting=Waiting0, cntls=Cntls0}) ->
+handle_event(info, {'DOWN', Ref, process, Pid, Reason}, running, State=#state{size={_, Max}, worker_sup_sup=WorkerSupSup, rooster=Rooster, workers=Workers0, users=Users0, waiting=Waiting0, cntls=Cntls0}) ->
 	case ets:take(Rooster, Pid) of
 		%% Idle worker exited.
-		[{Pid, Ref, idle, undefined}] ->
+		[{Pid, Ref, _, idle, undefined}] ->
 			Workers1=queue:filter(fun (#worker{worker=QPid}) -> QPid=/=Pid end, Workers0),
 			{keep_state, State#state{workers=Workers1}};
 		%% Checked out worker exited.
-		[{Pid, Ref, out, User}] ->
+		[{Pid, Ref, _, out, User}] ->
 			Users1=remove_user_worker(User, Pid, Users0),
-			Cntls1=maybe_restart_worker(WorkerSup, Max, Rooster, Waiting0, Cntls0),
+			Cntls1=maybe_restart_worker(WorkerSupSup, Max, Rooster, Waiting0, Cntls0),
 			{keep_state, State#state{users=Users1, cntls=Cntls1}};
 		%% Returning worker exited.
-		[{Pid, Ref, returning, Cntl}] ->
+		[{Pid, Ref, _, returning, Cntl}] ->
 			Cntls1=case maps:take(Cntl, Cntls0) of
 				{#returner_cntl{ref=CntlRef, worker=Pid}, Cntls2} ->
 					demonitor(CntlRef, [flush]),
@@ -345,17 +346,17 @@ handle_event(info, {'DOWN', Ref, process, Pid, Reason}, running, State=#state{si
 					Cntls0
 			end,
 			exit(Cntl, kill),
-			Cntls3=maybe_restart_worker(WorkerSup, Max, Rooster, Waiting0, Cntls1),
+			Cntls3=maybe_restart_worker(WorkerSupSup, Max, Rooster, Waiting0, Cntls1),
 			{keep_state, State#state{cntls=Cntls3}};
 		%% Starter exited.
-		[{Pid, Ref, starting, undefined}] ->
+		[{Pid, Ref, _, starting, undefined}] ->
 			Cntls1=maps:remove(Pid, Cntls0),
 			{Users1, Waiting1, Cntls2}=case dequeue(Waiting0) of
 				{#waiter{reply_to=ReplyTo, user=User, timer=TRef}, Waiting2} ->
 					_=timer:cancel(TRef),
-					gen_statem:reply(ReplyTo, {error, Reason}),
+					gen_statem:reply(ReplyTo, Reason),
 					Users2=dec_user_waiting(User, Users0),
-					Cntls3=maybe_restart_worker(WorkerSup, Max, Rooster, Waiting2, Cntls1),
+					Cntls3=maybe_restart_worker(WorkerSupSup, Max, Rooster, Waiting2, Cntls1),
 					{Users2, Waiting2, Cntls3};
 				empty ->
 					{Users0, Waiting0, Cntls1}
@@ -391,7 +392,7 @@ handle_event(info, {'DOWN', Ref, process, Pid, Reason}, running, State=#state{si
 		%% Returner exited.
 		[] when is_map_key(Pid, Cntls0) ->
 			{#returner_cntl{ref=Ref, worker=Worker}, Cntls1}=maps:take(Pid, Cntls0),
-			Workers1=stop_worker(WorkerSup, Worker, Rooster, Workers0),
+			Workers1=stop_worker(WorkerSupSup, Worker, Rooster, Workers0),
 			{keep_state, State#state{workers=Workers1, cntls=Cntls1}};
 		%% ???
 		[] ->
@@ -419,15 +420,21 @@ schedule_sweep_idle({_, SweepInterval}) ->
 	{ok, _}=timer:send_after(SweepInterval, {sweep_idle, Ref}),
 	Ref.
 
-start_worker(WorkerSup, Rooster, Cntls) ->
+start_worker(WorkerSupSup, Rooster, Cntls) ->
 	Self=self(),
 	{Pid, Ref}=spawn_monitor(
 		fun () ->
-			{ok, Worker}=hnc_worker_sup:start_worker(WorkerSup),
-			Self ! {started_worker, self(), Worker}
+			{ok, WorkerSup}=hnc_worker_sup_sup:start_worker_sup(WorkerSupSup),
+			case hnc_worker_sup:wait_worker(WorkerSup) of
+				{ok, Worker} ->
+					Self ! {started_worker, self(), WorkerSup, Worker};
+				Other ->
+					hnc_worker_sup_sup:stop_worker_sup(WorkerSupSup, WorkerSup),
+					exit(Other)
+			end
 		end
 	),
-	ets:insert_new(Rooster, {Pid, Ref, starting, undefined}),
+	ets:insert_new(Rooster, {Pid, Ref, undefined, starting, undefined}),
 	Cntls#{Pid => #starter_cntl{ref=Ref}}.
 
 return_worker(Worker, OnReturn, Cntls) ->
@@ -446,35 +453,40 @@ return_worker(Worker, OnReturn, Cntls) ->
 	),
 	Cntls#{Pid => #returner_cntl{ref=Ref, worker=Worker}}.
 
-maybe_restart_worker(WorkerSup, Max, Rooster, Waiting, Cntls) ->
+maybe_restart_worker(WorkerSupSup, Max, Rooster, Waiting, Cntls) ->
 	NW=queue:len(Waiting),
 	case NW>0 andalso (Max=:=infinity orelse ets:info(Rooster, size)<Max) andalso status_sizes(Rooster) of
 		#{starting:=NS, returning:=NR} when NS+NR<NW ->
-			start_worker(WorkerSup, Rooster, Cntls);
+			start_worker(WorkerSupSup, Rooster, Cntls);
 		_ ->
 			Cntls
 	end.
 
-stop_worker(WorkerSup, Worker, Rooster, Workers0) ->
+stop_worker(WorkerSupSup, Worker, Rooster, Workers0) ->
 	_=case ets:take(Rooster, Worker) of
-		[{Worker, Ref, _, _}] ->
-			demonitor(Ref, [flush]);
+		[{Worker, Ref, WorkerSup, _, _}] ->
+			demonitor(Ref, [flush]),
+			spawn(
+				fun () ->
+					_=hnc_worker_sup:stop_worker(WorkerSup),
+					_=hnc_worker_sup_sup:stop_worker_sup(WorkerSupSup, WorkerSup)
+				end
+			),
+			queue:filter(fun (#worker{worker=QPid}) -> QPid=/=Worker end, Workers0);
 		_ ->
-			ok
-	end,
-	spawn(fun () -> hnc_worker_sup:stop_worker(WorkerSup, Worker) end),
-	queue:filter(fun (#worker{worker=QPid}) -> QPid=/=Worker end, Workers0).
+			Workers0
+	end.
 
 status_sizes(Rooster) ->
 	ets:foldl(
-		fun ({_, _, Status, _}, Acc) ->
+		fun ({_, _, _, Status, _}, Acc) ->
 			maps:update_with(Status, fun (Old) -> Old+1 end, Acc)
 		end,
 		#{starting => 0, idle => 0, out => 0, returning => 0},
 		Rooster
 	).
 
-prune_workers(Min, Treshold, Strategy, WorkerSup, Rooster, Workers0) ->
+prune_workers(Min, Treshold, Strategy, WorkerSupSup, Rooster, Workers0) ->
 	WList=case Strategy of
 		fifo -> lists:reverse(queue:to_list(Workers0));
 		lifo -> queue:to_list(Workers0)
@@ -483,7 +495,7 @@ prune_workers(Min, Treshold, Strategy, WorkerSup, Rooster, Workers0) ->
 	{_, Workers1}=lists:foldl(
 		fun
 			(#worker{stamp=Stamp, worker=Worker}, {N1, Workers2}) when N1>0, Stamp=<Treshold ->
-				{N1-1, stop_worker(WorkerSup, Worker, Rooster, Workers2)};
+				{N1-1, stop_worker(WorkerSupSup, Worker, Rooster, Workers2)};
 			(_, Acc) ->
 				Acc
 		end,
@@ -547,12 +559,12 @@ idle_or_assign_worker(OldUser, Worker, Rooster, Workers0, Users0, Waiting0) ->
 	Users1=remove_user_worker(OldUser, Worker, Users0),
 	case dequeue(Waiting0) of
 		empty ->
-			ets:update_element(Rooster, Worker, [{3, idle}, {4, undefined}]),
+			ets:update_element(Rooster, Worker, [{4, idle}, {5, undefined}]),
 			Workers1=queue:in(#worker{stamp=stamp(), worker=Worker}, Workers0),
 			{Workers1, Users1, Waiting0};
 		{#waiter{reply_to=ReplyTo, user=NewUser, timer=TRef}, Waiting1} ->
 			_=timer:cancel(TRef),
-			ets:update_element(Rooster, Worker, [{3, out}, {4, NewUser}]),
+			ets:update_element(Rooster, Worker, [{4, out}, {5, NewUser}]),
 			gen_statem:reply(ReplyTo, {ok, Worker}),
 			Users2=dec_user_waiting(NewUser, Users1),
 			Users3=add_user_worker(NewUser, Worker, Users2),

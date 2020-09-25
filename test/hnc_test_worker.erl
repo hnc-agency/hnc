@@ -21,6 +21,15 @@
 -export([init/1]).
 -export([echo/2]).
 
+start_link(start_crash) ->
+	exit(start_crash);
+start_link(start_error) ->
+	{error, start_error};
+start_link(start_ignore) ->
+	ignore;
+start_link({delay_start, Time}) ->
+	timer:sleep(Time),
+	{ok, spawn_link(?MODULE, init, [undefined])};
 start_link(Args) ->
 	{ok, spawn_link(?MODULE, init, [Args])}.
 
@@ -37,10 +46,13 @@ echo(Pid, Msg) ->
 
 init(crash) ->
 	exit(crash);
-init(_) ->
-	loop().
+init(Args={delay_stop, _}) ->
+	erlang:process_flag(trap_exit, true),
+	loop(Args);
+init(Args) ->
+	loop(Args).
 
-loop() ->
+loop(Args) ->
 	receive
 		stop ->
 			ok;
@@ -48,5 +60,14 @@ loop() ->
 			exit(crash);
 		{{To, Tag}, Msg} ->
 			To ! {Tag, Msg},
-			loop()
+			loop(Args);
+		{'EXIT', _, Reason} ->
+			case Args of
+				{delay_stop, Time} ->
+					timer:sleep(Time),
+					ok;
+				_ ->
+					ok
+			end,
+			exit(Reason)
 	end.

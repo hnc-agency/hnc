@@ -20,7 +20,22 @@
 -export([stop/1]).
 
 start(_, _) ->
+	_=logger:add_primary_filter(
+		?MODULE,
+		{
+			fun
+				%% Suppress worker_sup_sup shutdown errors, they may happen if a pool shuts down.
+				(#{meta:=#{hnc:=#{module:=hnc_worker_sup_sup}}, msg:={report, #{label:={supervisor, shutdown_error}}}}, undefined) -> stop;
+				%% Suppress worker_sup shutdown reports, they are expected if a worker crashes.
+				(#{meta:=#{hnc:=#{module:=hnc_worker_sup}}, msg:={report, #{label:={supervisor, shutdown}}}}, undefined) -> stop;
+				%% Ignore everything else.
+				(_, undefined) -> ignore
+			end,
+			undefined
+		}
+	),
 	hnc_sup:start_link().
 
 stop(_) ->
+	_=logger:remove_primary_filter(?MODULE),
 	ok.

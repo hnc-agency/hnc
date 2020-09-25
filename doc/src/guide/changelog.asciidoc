@@ -23,7 +23,10 @@ Mostly refactoring, cleanup, and some new features.
 
 === 0.3.0
 
-Mostly refactoring and cleanup.
+Mostly refactoring and cleanup, and some new features.
+
+* Workers are started and stopped in parallel, ie do not slow down
+  each other.
 
 * `prune/1`: Shrink the pool by evicting idle workers.
 
