@@ -1,16 +1,19 @@
 == Miscellaneous
 
-=== Worker startup and shutdown phases
+=== Prolonged worker startup phases
 
-You should keep the startup and shutdown phases of workers as short
-as possible, otherwise the performance of the pool in terms
-of checkout time will suffer when it needs to start a new worker to
-satisfy a checkout request.
+When a pool needs to start new workers to satisfy checkout
+requests, it does so in parallel. +
+This means that, when several checkout requests arrive at about
+the same time, for which new workers need to be started, the
+a worker does not have to wait for the ones before to complete
+their start phase before it can be started.
+
+Still, you may want to keep the startup phases of your workers
+as short as possible, since a user will still have to wait for
+that amount of time before it receives a newly started worker.
 
 To achieve short startup phases, you may consider returning
 the worker pid from the respective `start_link/1` function
 immediately, and do any initialization in a separate step,
 maybe even when the worker is being used for the first time.
-
-To achieve short shutdown phases, your worker may fire off a
-separate process to do the cleanup, and exit itself.

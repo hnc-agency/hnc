@@ -31,6 +31,9 @@ all() ->
 		blocking,
 		blocking_userdeath,
 		blocking_workerdeath,
+		worker_start_ignore,
+		worker_start_error,
+		worker_start_crash,
 		on_return,
 		on_return_timeout,
 		on_return_funcrash,
@@ -42,8 +45,26 @@ all() ->
 		linger,
 		change_opts,
 		proxy,
-		embedded
+		embedded,
+		start_parallel,
+		stop_parallel
 	].
+
+init_per_suite(Config) ->
+	ok=logger:add_primary_filter(
+		?MODULE,
+		{
+			fun
+				(#{meta:=#{hnc:=#{module:=hnc_worker_sup}}, msg:={report, #{label:={supervisor, child_terminated}}}}, undefined) -> stop;
+				(_, undefined) -> ignore
+			end,
+			undefined
+		}
+	),
+	Config.
+
+end_per_suite(_) ->
+	ok.
 
 checkout_checkin(_) ->
 	doc("Ensure that checking workers out and back in works."),
@@ -191,6 +212,45 @@ blocking_workerdeath(_) ->
 	Pid ! {self(), ok},
 	_=hnc:checkout(test),
 	#{idle:=0, out:=1, starting:=0, returning:=0}=hnc:pool_status(test),
+	ok=hnc:stop_pool(test),
+	ok.
+
+worker_start_ignore(_) ->
+	doc("Ensure that worker start ignores result in the appropriate checkout failure."),
+	{ok, _}=do_start_pool(test, #{size=>{0,1}}, hnc_test_worker, start_ignore),
+	_=try
+		hnc:checkout(test)
+	of
+		_ -> exit(unexpected_success)
+	catch
+		error:{not_a_worker, _} -> ok
+	end,
+	ok=hnc:stop_pool(test),
+	ok.
+
+worker_start_error(_) ->
+	doc("Ensure that worker start errors result in the appropriate checkout failure."),
+	{ok, _}=do_start_pool(test, #{size=>{0,1}}, hnc_test_worker, start_error),
+	_=try
+		hnc:checkout(test)
+	of
+		_ -> exit(unexpected_success)
+	catch
+		error:start_error -> ok
+	end,
+	ok=hnc:stop_pool(test),
+	ok.
+
+worker_start_crash(_) ->
+	doc("Ensure that worker start crashes result in the appropriate checkout error."),
+	{ok, _}=do_start_pool(test, #{size=>{0,1}}, hnc_test_worker, start_crash),
+	_=try
+		hnc:checkout(test)
+	of
+		_ -> exit(unexpected_success)
+	catch
+		error:{'EXIT', start_crash} -> ok
+	end,
 	ok=hnc:stop_pool(test),
 	ok.
 
@@ -360,7 +420,8 @@ proxy(_) ->
 	doc("Ensure that worker proxies work."),
 	[hnc_test_worker]=hnc_test_workerproxy:get_modules(),
 	{ok, PoolSup}=do_start_pool(test, #{}, hnc_test_workerproxy, undefined),
-	[WorkerSup]=[Pid || {hnc_worker_sup, Pid, supervisor, _} <- supervisor:which_children(PoolSup)],
+	[WorkerSupSup]=[Pid || {hnc_worker_sup_sup, Pid, supervisor, _} <- supervisor:which_children(PoolSup)],
+	[WorkerSup|_]=[Pid || {undefined, Pid, supervisor, _} <- supervisor:which_children(WorkerSupSup)],
 	{ok,
 		#{
 			start:={hnc_test_workerproxy, _, _},
@@ -379,6 +440,54 @@ embedded(_) ->
 	ok=hnc:checkin(WRef),
 	#{out:=0}=hnc:pool_status(test),
 	exit(EmbeddedSup, normal),
+	ok.
+
+start_parallel(_) ->
+	doc("Ensure that workers are started in parallel."),
+	{ok, _}=do_start_pool(test, #{size => {0, 5}}, hnc_test_worker, {delay_start, 1000}),
+	Self=self(),
+	Pids=lists:map(
+		fun (_) ->
+			spawn_link(
+				fun () ->
+					WRef=hnc:checkout(test),
+					Self ! {self(), WRef},
+					ok=receive {Self, ok} -> ok after 1000 -> exit(timeout) end,
+					hnc:checkin(WRef)
+				end
+			)
+		end,
+		lists:seq(1, 5)
+	),
+	{Time, ok}=timer:tc(
+		fun () ->
+			lists:foreach(
+				fun (Pid) ->
+					_=receive {Pid, _} -> Pid ! {self(), ok} after 5000 -> exit(timeout) end
+				end,
+				Pids
+			)
+		end
+	),
+	true=Time<2000000, %% timer:tc returns time in microseconds
+	ok=hnc:stop_pool(test),
+	ok.
+
+stop_parallel(_) ->
+	doc("Ensure that workers are stopped in parallel."),
+	{ok, _}=do_start_pool(test, #{size => {0, 5}, shutdown => 5000}, hnc_test_worker, {delay_stop, 1000}),
+	WRefs=[hnc:checkout(test) || _ <- lists:seq(1, 5)],
+	[ok=hnc:checkin(WRef) || WRef <- WRefs],
+	#{idle:=5}=hnc:pool_status(test),
+	ok=hnc:set_size(test, {0, 1}),
+	#{idle:=5}=hnc:pool_status(test),
+	ok=hnc:prune(test),
+	{Time, WRef}=timer:tc(fun () -> hnc:checkout(test) end),
+	true=Time<2000,
+	#{out:=1, idle:=0}=hnc:pool_status(test),
+	ok=hnc:checkin(WRef),
+	#{out:=0, idle:=1}=hnc:pool_status(test),
+	ok=hnc:stop_pool(test),
 	ok.
 
 do_start_pool(PoolName, PoolOpts, WorkerMod, WorkerArgs) ->
