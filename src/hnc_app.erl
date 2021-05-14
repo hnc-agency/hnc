@@ -1,5 +1,5 @@
-%% Copyright (c) 2020, Jan Uhlig <j.uhlig@mailingwork.de>
-%% Copyright (c) 2020, Maria Scott <maria-12648430@gmx.net>
+%% Copyright (c) 2020-2021, Jan Uhlig <juhlig@hnc-agency.org>
+%% Copyright (c) 2020-2021, Maria Scott <maria-12648430@hnc-agency.org>
 %%
 %% Permission to use, copy, modify, and/or distribute this software for any
 %% purpose with or without fee is hereby granted, provided that the above
@@ -19,15 +19,22 @@
 -export([start/2]).
 -export([stop/1]).
 
+-spec start(_, _) -> {ok, pid()} | {error, Reason :: term()}.
 start(_, _) ->
 	_=logger:add_primary_filter(
 		?MODULE,
 		{
 			fun
+				%% Suppress pool_sup shutdown errors, they may happen if a pool shuts down.
+				(#{meta:=#{hnc:=#{module:=hnc_pool_sup}}, msg:={report, #{label:={supervisor, shutdown_error}}}}, undefined) -> stop;
 				%% Suppress worker_sup_sup shutdown errors, they may happen if a pool shuts down.
 				(#{meta:=#{hnc:=#{module:=hnc_worker_sup_sup}}, msg:={report, #{label:={supervisor, shutdown_error}}}}, undefined) -> stop;
-				%% Suppress worker_sup shutdown reports, they are expected if a worker crashes.
+				%% Suppress worker_sup shutdown reports, they are expected if an agent crashes.
 				(#{meta:=#{hnc:=#{module:=hnc_worker_sup}}, msg:={report, #{label:={supervisor, shutdown}}}}, undefined) -> stop;
+				%% Suppress worker_sup shutdown reports, they are expected if an agent stops by itself.
+				(#{meta:=#{hnc:=#{module:=hnc_worker_sup}}, msg:={report, #{label:={supervisor, child_terminated}}}}, undefined) -> stop;
+				%% Suppress worker_sup shutdown errors, they are expected if an agent crashes.
+				(#{meta:=#{hnc:=#{module:=hnc_worker_sup}}, msg:={report, #{label:={supervisor, shutdown_error}}}}, undefined) -> stop;
 				%% Ignore everything else.
 				(_, undefined) -> ignore
 			end,
@@ -36,6 +43,7 @@ start(_, _) ->
 	),
 	hnc_sup:start_link().
 
+-spec stop(_) -> ok.
 stop(_) ->
 	_=logger:remove_primary_filter(?MODULE),
 	ok.

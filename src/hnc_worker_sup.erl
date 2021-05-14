@@ -1,5 +1,5 @@
-%% Copyright (c) 2020, Jan Uhlig <j.uhlig@mailingwork.de>
-%% Copyright (c) 2020, Maria Scott <maria-12648430@gmx.net>
+%% Copyright (c) 2020-2021, Jan Uhlig <juhlig@hnc-agency.org>
+%% Copyright (c) 2020-2021, Maria Scott <maria-12648430@hnc-agency.org>
 %%
 %% Permission to use, copy, modify, and/or distribute this software for any
 %% purpose with or without fee is hereby granted, provided that the above
@@ -17,44 +17,68 @@
 
 -behavior(supervisor).
 
--export([start_link/5]).
--export([init/1]).
--export([wait_worker/1]).
+-export([start_link/0]).
+-export([start_agent/5]).
+-export([stop_agent/1]).
+-export([start_worker/4]).
 -export([stop_worker/1]).
+-export([init/1]).
 
--spec start_link(module(), term(), hnc:shutdown(), [module()], pid()) -> {ok, pid()}.
-start_link(Mod, Args, Shutdown, Modules, ReportTo) ->
-	supervisor:start_link(?MODULE, {Mod, Args, Shutdown, Modules, ReportTo}).
+-spec start_link() -> supervisor:startlink_ret().
+start_link() ->
+	supervisor:start_link(?MODULE, {}).
 
--spec wait_worker(pid()) -> {ok, hnc:worker()} | {error, term()} | term().
-wait_worker(Sup) ->
-	receive
-		{worker_start, Sup, {ok, Worker}} when is_pid(Worker) -> {ok, Worker};
-		{worker_start, Sup, {ok, NotWorker}} -> {error, {not_a_worker, NotWorker}};
-		{worker_start, Sup, {error, {Reason, _}}} -> {error, Reason};
-		{worker_start, Sup, Other} -> Other
-	end.
+-spec start_agent(Sup :: pid(), Pool :: pid(), Opts :: hnc:opts(), WorkerMod :: module(), WorkerArgs :: term()) -> supervisor:startchild_ret().
+start_agent(Sup, Pool, Opts, Mod, Args) ->
+	supervisor:start_child(
+		Sup,
+		#{
+			id => hnc_agent,
+			start => {hnc_agent, start_link, [Pool, Opts, Mod, Args]},
+			restart => permanent,
+			shutdown => brutal_kill
+		}
+	).
 
--spec stop_worker(pid()) -> ok.
+-spec stop_agent(Sup :: pid()) -> ok.
+stop_agent(Sup) ->
+	_=supervisor:terminate_child(Sup, hnc_agent),
+	ok.
+
+-spec start_worker(Sup :: pid(), WorkerMod :: module(), WorkerArgs :: term(), Shutdown :: (timeout() | brutal_kill)) -> supervisor:startchild_ret().
+start_worker(Sup, Mod, Args, Shutdown) ->
+	{module, Mod}=code:ensure_loaded(Mod),
+	Modules=case erlang:function_exported(Mod, get_modules, 0) of
+		true -> Mod:get_modules();
+		false -> [Mod]
+	end,
+	supervisor:start_child(
+		Sup,
+		#{
+			id => hnc_worker,
+			start => {Mod, start_link, [Args]},
+			restart => temporary,
+			shutdown => Shutdown,
+			modules => Modules
+		}
+	).
+
+-spec stop_worker(Sup :: pid()) -> ok.
 stop_worker(Sup) ->
-	supervisor:terminate_child(Sup, hnc_worker).	
+	_=supervisor:terminate_child(Sup, hnc_worker),
+	_=supervisor:delete_child(Sup, hnc_worker),
+	ok.
 
-init({Mod, Args, Shutdown, Modules, ReportTo}) ->
+init({}) ->
 	ok=logger:update_process_metadata(#{hnc => #{module => ?MODULE}}),
-	Self=self(),
-	_=spawn_link(
-		fun () ->
-			Res=supervisor:start_child(
-				Self,
-				#{
-					id => hnc_worker,
-					start => {Mod, start_link, [Args]},
-					restart => permanent,
-					shutdown => Shutdown,
-					modules => Modules
-				}
-			),
-			ReportTo ! {worker_start, Self, Res}
-		end
-	),
-	{ok, {#{intensity=>0}, []}}.
+	{
+		ok,
+		{
+			#{
+				strategy => one_for_all,
+				intensity => 0
+		 	},
+			[
+			]
+		}
+	}.

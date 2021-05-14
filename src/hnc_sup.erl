@@ -1,5 +1,5 @@
-%% Copyright (c) 2020, Jan Uhlig <j.uhlig@mailingwork.de>
-%% Copyright (c) 2020, Maria Scott <maria-12648430@gmx.net>
+%% Copyright (c) 2020-2021, Jan Uhlig <juhlig@hnc-agency.org>
+%% Copyright (c) 2020-2021, Maria Scott <maria-12648430@hnc-agency.org>
 %%
 %% Permission to use, copy, modify, and/or distribute this software for any
 %% purpose with or without fee is hereby granted, provided that the above
@@ -21,11 +21,11 @@
 -export([stop_pool/1]).
 -export([init/1]).
 
--spec start_link() -> {ok, pid()}.
+-spec start_link() -> supervisor:startlink_ret().
 start_link() ->
 	supervisor:start_link({local, ?MODULE}, ?MODULE, []).
 
--spec start_pool(hnc:pool(), hnc:opts(), module(), term()) -> {ok, pid()}.
+-spec start_pool(Name :: hnc:pool(), Opts :: hnc:opts(), WorkerMod :: module(), WorkerArgs :: term()) -> supervisor:startchild_ret().
 start_pool(Name, Opts, Mod, Args) ->
 	ChildSpec0=hnc:child_spec(Name, Opts, Mod, Args),
 	ChildSpec1=ChildSpec0#{restart => temporary},
@@ -34,9 +34,10 @@ start_pool(Name, Opts, Mod, Args) ->
 		ChildSpec1
 	).
 
--spec stop_pool(hnc:pool()) -> ok.
+-spec stop_pool(Name :: hnc:pool()) -> ok.
 stop_pool(Name) ->
-	supervisor:terminate_child(?MODULE, {hnc_pool, Name}).
+	_=supervisor:terminate_child(?MODULE, {hnc_pool, Name}),
+	ok.
 
 init([]) ->
 	{
