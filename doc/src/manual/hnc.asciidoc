@@ -42,7 +42,7 @@ interacting with pools.
 
 [source,erlang]
 ----
-worker_ref() = term()
+ref() = term()
 
 pool() = atom()
 
@@ -60,13 +60,12 @@ on_return() = undefined | {fun((worker()) -> any()), timeout()}
 
 shutdown() = timeout() | brutal_kill
 
-worker_status() = idle | out | returning
+worker_status() = starting | idle | out | returning
 
 pool_status() = #{
-	idle := non_neg_integer(),
-	out := non_neg_integer(),
-	starting := non_neg_integer(),
-	returning := non_neg_integer()
+	available := non_neg_integer(),
+	unavailable := non_neg_integer(),
+	starting := non_neg_integer()
 }
 
 opts() = #{
@@ -230,7 +229,7 @@ WorkerRef = hnc:checkout(PoolName, Timeout).
 
 PoolName = pool():: Pool identifier as given in `start_pool/4`.
 Timeout = timeout():: Maximum time to wait for the checkout to succeed.
-WorkerRef = worker_ref():: The identifier of the worker that was checked out from the pool.
+WorkerRef = ref():: The identifier of the worker that was checked out from the pool.
 
 Checks out a worker from the pool. If the pool has `idle` workers available,
 it will return one of them. Which of the available workers is picked depends
@@ -250,14 +249,12 @@ worker.
 
 [source,erlang]
 ----
-Result = hnc:checkin(WorkerRef).
-Result = hnc:checkin(WorkerRef, Timeout).
+ok = hnc:checkin(WorkerRef).
+ok = hnc:checkin(WorkerRef, Timeout).
 ----
 
 WorkerRef = worker_ref():: The identifier of the worker to be checkedi back in, as returned by `checkout/1,2`.
 Timeout = timeout():: Maximum time to wait for the checkin to succeed.
-Result = ok | {error, Reason}:: The result of the `checkin` operation.
-Reason = not_owner | not_found:: If checking in failed, the reason for the failure.
 
 Returns the worker identified by the given `WorkerRef` to the pool.
 
@@ -269,7 +266,7 @@ it in the `on_return` option, the worker is killed and removed from the pool, as
 it is then assumed to be in an undefined state.
 
 Returns `ok` on success. If the process doing the checkin is not the current owner
-of the worker, `{error, not_owner}` is returned.
+of the worker identifier, an error exception with reason `not_owner` is raised.
 
 === Performing a transaction
 
@@ -298,22 +295,20 @@ If you want the worker to remain checked out, you may give it away to another pr
 
 [source,erlang]
 ----
-Result = hnc:give_away(WorkerRef, NewUser, GiftData).
-Result = hnc:give_away(WorkerRef, NewUser, GiftData, Timeout).
+ok = hnc:give_away(WorkerRef, NewUser, GiftData).
+ok = hnc:give_away(WorkerRef, NewUser, GiftData, Timeout).
 ----
 
-WorkerRef = worker_ref():: The identifier of the worker to be transferred to `NewUser`, as returned by `checkout/1,2`.
+WorkerRef = ref():: The identifier of the worker to be transferred to `NewUser`, as returned by `checkout/1,2`.
 NewUser = pid():: The pid of the process to give the worker to.
 GiftData = term():: Additional data to send to the new user.
 Timeout = timeout():: Maximum time to wait before a worker becomes available.
-Result = ok | {error, Reason}:: The result of the `give_away` operation.
-Reason = not_owner | not_found:: If giving away failed, the reason for the failure.
 
 On success, `ok` is returned. Additionally, the new owner process is sent a message
 `{'HNC-WORKER-TRANSFER', WorkerRef, FromPid, GiftData}`.
 
-If the process calling this function is not the owner of the worker, `{error, not_owner}`
-is returned.
+If the process calling this function is not the owner of the worker identifier, an error exception
+with reason `not_owner` is raised.
 
 === Getting and setting the checkout strategy
 
@@ -384,9 +379,9 @@ Status = hnc:worker_status(WorkerRef).
 Status = hnc:worker_status(WorkerRef, Timeout).
 ----
 
-WorkerRef = worker_ref():: The identifier of the worker whose status to query.
+WorkerRef = ref():: The identifier of the worker whose status to query.
 Timeout = timeout():: Maximum time to wait.
-Status = worker_status() | undefined:: The status of the given worker of the given pool.
+Status = worker_status():: The status of the given worker of the given pool.
 
 Retrieve the status of the given worker.
 
@@ -408,7 +403,6 @@ Status = pool_status():: The status of the given pool.
 
 Retrieve the pool status in a map.
 
-* `idle`: number of checked in (available) workers.
-* `out`: number of checked out (not available) workers.
+* `available`: number of available workers.
+* `unavailable`: number of unavailable workers.
 * `starting`: number of workers that are in the process of being started (not yet available).
-* `returning`: number of workers that are in the process of returning (not yet available).

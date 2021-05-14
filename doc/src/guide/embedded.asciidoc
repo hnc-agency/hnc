@@ -35,8 +35,8 @@ in the `Usage` chapter.
 ----
 {ok, _} = my_pool_sup:start_link().
 
-WorkerRef = hnc:checkout(my_pool).
-ok = hnc:checkin(WorkerRef).
+Ref = hnc:checkout(my_pool).
+ok = hnc:checkin(Ref).
 
 Result = hnc:transaction(my_other_pool, fun do_stuff/1).
 ----

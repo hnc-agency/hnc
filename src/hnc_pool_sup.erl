@@ -1,5 +1,5 @@
-%% Copyright (c) 2020, Jan Uhlig <j.uhlig@mailingwork.de>
-%% Copyright (c) 2020, Maria Scott <maria-12648430@gmx.net>
+%% Copyright (c) 2020-2021, Jan Uhlig <juhlig@hnc-agency.org>
+%% Copyright (c) 2020-2021, Maria Scott <maria-12648430@hnc-agency.org>
 %%
 %% Permission to use, copy, modify, and/or distribute this software for any
 %% purpose with or without fee is hereby granted, provided that the above
@@ -18,26 +18,27 @@
 -behavior(supervisor).
 
 -export([start_link/4]).
--export([start_worker_sup_sup/4]).
+-export([start_worker_sup_sup/1]).
 -export([init/1]).
 
--spec start_link(hnc:pool(), hnc:opts(), module(), term()) -> {ok, pid()}.
+-spec start_link(Name :: hnc:pool(), Opts :: hnc:opts(), WorkerMod :: module(), WorkerArgs :: term()) -> supervisor:startlink_ret().
 start_link(Name, Opts, Mod, Args) ->
 	supervisor:start_link(?MODULE, {Name, Opts, Mod, Args}).
 
--spec start_worker_sup_sup(pid(), module(), term(), timeout() | brutal_kill) -> {ok, pid()}.
-start_worker_sup_sup(Sup, Mod, Args, Shutdown) ->
+-spec start_worker_sup_sup(Sup :: pid()) -> supervisor:startchild_ret().
+start_worker_sup_sup(Sup) ->
 	supervisor:start_child(
 		Sup,
 		#{
 			id => hnc_worker_sup_sup,
-			start => {hnc_worker_sup_sup, start_link, [Mod, Args, Shutdown]},
+			start => {hnc_worker_sup_sup, start_link, []},
 			restart => permanent,
 			type => supervisor
 		}
 	).
 
 init({Name, Opts, Mod, Args}) ->
+	ok=logger:update_process_metadata(#{hnc => #{module => ?MODULE}}),
 	{
 		ok,
 		{

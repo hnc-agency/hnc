@@ -61,8 +61,3 @@ second element specifies the interval (in milliseconds) between such checks.
   given time.
 * It will always keep (ie, not stop) the minimum amount of workers specified in the `size`
   configuration option.
-* When stopping workers, the cleanup will take the setting of the `strategy` configuration
-  option into consideration, ie it will preferrably stop those workers that are the least
-  likely to be checked out again. Specifically, with the `fifo` strategy it will stop those
-  workers that returned last, while with the `lifo` strategy it will stop those workers
-  that returned first.

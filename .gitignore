@@ -10,3 +10,5 @@ ebin/test
 ebin/*.beam
 logs
 test/*.beam
+cover
+test/ct.cover.spec
