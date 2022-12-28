@@ -1,5 +1,5 @@
-%% Copyright (c) 2020, Jan Uhlig <j.uhlig@mailingwork.de>
-%% Copyright (c) 2020, Maria Scott <maria-12648430@gmx.net>
+%% Copyright (c) 2020-2022, Jan Uhlig <juhlig@hnc-agency.org>
+%% Copyright (c) 2020-2022, Maria Scott <maria-12648430@hnc-agency.org>
 %%
 %% Permission to use, copy, modify, and/or distribute this software for any
 %% purpose with or without fee is hereby granted, provided that the above
